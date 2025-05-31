@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title_tag %}{{ page_title }} - Video Management System{% endblock %}
+
+{% block content %}
+    <h2>Processed Video Details</h2>
+
+    {% if data %}
+        <div class="result-block">
+            <h3>Overall Information</h3>
+            <p><strong>Original Filename:</strong> {{ data.original_filepath | default('Not available') }}</p>
+            <p><strong>Standardized Filename:</strong>
+                {{ data.consolidated_metadata.standardized_filename if data.consolidated_metadata and data.consolidated_metadata.standardized_filename else 'Not generated' }}
+            </p>
+        </div>
+
+        <div class="result-block">
+            <h3>Consolidated Data</h3>
+            {% if data.consolidated_metadata %}
+                <p><strong>Title:</strong> {{ data.consolidated_metadata.title | default('Not available') }}</p>
+                <p><strong>Code:</strong> {{ data.consolidated_metadata.code | default('Not available') }}</p>
+                <p><strong>Publisher:</strong> {{ data.consolidated_metadata.publisher | default('Not available') }}</p>
+
+                <h4>Actors:</h4>
+                {% if data.consolidated_metadata.actors and data.consolidated_metadata.actors|length > 0 %}
+                    <ul>
+                    {% for actor in data.consolidated_metadata.actors %}
+                        <li>{{ actor.canonical_name | default('Unknown Name') }} (ID: {{ actor.id | default('N/A') }})</li>
+                    {% endfor %}
+                    </ul>
+                {% else %}
+                    <p>None found or linked.</p>
+                {% endif %}
+            {% else %}
+                <p>Consolidated metadata not available.</p>
+            {% endif %}
+        </div>
+
+        <hr>
+
+        <div class="result-block">
+            <h3>Parsed from Filename</h3>
+            {% if data.parsed_data_from_filename %}
+                <p><strong>Code:</strong> {{ data.parsed_data_from_filename.code | default('Not found') }}</p>
+                <p><strong>Title:</strong> {{ data.parsed_data_from_filename.title | default('Not found') }}</p>
+                <p><strong>Actors (raw):</strong>
+                    {{ data.parsed_data_from_filename.actors | join(', ') if data.parsed_data_from_filename.actors and data.parsed_data_from_filename.actors|length > 0 else 'None found' }}
+                </p>
+            {% else %}
+                <p>No data parsed from filename.</p>
+            {% endif %}
+        </div>
+
+        <hr>
+
+        <div class="result-block">
+            <h3>Content Analysis (Simulated)</h3>
+            <p><strong>Triggered:</strong> {{ 'Yes' if data.content_analysis_triggered else 'No' }}</p>
+            {% if data.content_analysis_triggered %}
+                {% if data.raw_content_analysis_results and data.raw_content_analysis_results != "Not Performed" %}
+                    <h4>OCR Results:</h4>
+                    <p><strong>Publisher Logo Text:</strong> {{ data.raw_content_analysis_results.ocr.publisher_logo_text | default('None found') }}</p>
+                    <p><strong>On-screen Actor Names:</strong>
+                        {{ data.raw_content_analysis_results.ocr.on_screen_actor_names | join(', ') if data.raw_content_analysis_results.ocr.on_screen_actor_names and data.raw_content_analysis_results.ocr.on_screen_actor_names|length > 0 else 'None found' }}
+                    </p>
+                    <p><strong>Other Text:</strong>
+                        {{ data.raw_content_analysis_results.ocr.other_text | join('; ') if data.raw_content_analysis_results.ocr.other_text and data.raw_content_analysis_results.ocr.other_text|length > 0 else 'None found' }}
+                    </p>
+
+                    <h4>Audio Analysis Results:</h4>
+                    <p><strong>Mentioned Actor Names:</strong>
+                        {{ data.raw_content_analysis_results.audio.mentioned_actor_names | join(', ') if data.raw_content_analysis_results.audio.mentioned_actor_names and data.raw_content_analysis_results.audio.mentioned_actor_names|length > 0 else 'None found' }}
+                    </p>
+                    <p><strong>Mentioned Title Keywords:</strong>
+                        {{ data.raw_content_analysis_results.audio.mentioned_title_keywords | join(', ') if data.raw_content_analysis_results.audio.mentioned_title_keywords and data.raw_content_analysis_results.audio.mentioned_title_keywords|length > 0 else 'None found' }}
+                    </p>
+                {% else %}
+                    <p>Raw content analysis results not available.</p>
+                {% endif %}
+            {% endif %}
+        </div>
+
+    {% else %}
+        <p>No processing data available to display.</p>
+    {% endif %}
+    <hr>
+    <p><a href="{{ url_for('upload_file_route') }}">Upload another video</a> | <a href="{{ url_for('home') }}">Back to Home</a></p>
+
+{% endblock %}
+```

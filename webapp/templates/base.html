@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title_tag %}{% if page_title %}{{ page_title }} - {% endif %}Video Management System{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    {% block styles %}{% endblock %}
+</head>
+<body>
+    <header>
+        <div class="container">
+            <a href="{{ url_for('home') }}" class="site-title">Video Manager</a>
+            <nav>
+                <ul>
+                    <li><a href="{{ url_for('home') }}" class="{{ 'active' if active_page == 'home' else '' }}">Home</a></li>
+                    <li><a href="{{ url_for('upload_file_route') }}" class="{{ 'active' if active_page == 'upload' else '' }}">Upload Video</a></li>
+                    <li><a href="{{ url_for('manage_actors_route') }}" class="{{ 'active' if active_page == 'actors' else '' }}">Manage Actors</a></li>
+                </ul>
+            </nav>
+        </div>
+    </header>
+
+    <div class="main-content-area">
+        <div class="container">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+              {% if messages %}
+                <ul class=flashes>
+                {% for category, message in messages %}
+                  <li class="{{ category }}">{{ message }}</li>
+                {% endfor %}
+                </ul>
+              {% endif %}
+            {% endwith %}
+            {% block content %}{% endblock %}
+        </div>
+    </div>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2023-2024 Video Classification Management System</p>
+        </div>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
+```

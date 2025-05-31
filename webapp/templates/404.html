@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+
+{% block title_tag %}{{ page_title }} - Video Management System{% endblock %}
+
+{% block content %}
+    <div style="text-align: center;">
+        <h1>404 - Page Not Found</h1>
+        <p>Oops! The page you are looking for does not exist or has been moved.</p>
+        <p><a href="{{ url_for('home') }}">Go to Homepage</a></p>
+    </div>
+{% endblock %}
+```

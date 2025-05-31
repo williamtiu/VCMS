@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title_tag %}{{ page_title }} - Video Management System{% endblock %}
+
+{% block content %}
+    <h2>Manage Actors</h2>
+
+    <div class="actor-forms-container">
+        <div class="form-section">
+            <h3>Add New Actor</h3>
+            <form method="POST" action="{{ url_for('add_actor_route') }}">
+                <div>
+                    <label for="actor_name">Actor Name:</label>
+                    <input type="text" id="actor_name" name="actor_name" required placeholder="Enter new actor's full name">
+                </div>
+                <div>
+                    <button type="submit">Add Actor</button>
+                </div>
+            </form>
+        </div>
+
+        <div class="form-section">
+            <h3>Add Alias for Actor</h3>
+            <form method="POST" action="{{ url_for('add_alias_route') }}">
+                <div>
+                    <label for="actor_id">Actor ID:</label>
+                    <input type="number" id="actor_id" name="actor_id" required placeholder="Enter ID of existing actor">
+                </div>
+                <div>
+                    <label for="alias_name">Alias Name:</label>
+                    <input type="text" id="alias_name" name="alias_name" required>
+                </div>
+                <div>
+                    <button type="submit">Add Alias</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <hr style="margin: 30px 0;"> {# This inline style is minor, can be kept or moved #}
+
+    <h3>Existing Actors and Aliases</h3>
+    <div class="actors-list">
+        {% if actors_list and actors_list|length > 0 %}
+            <ul>
+                {% for actor_data in actors_list %}
+                    <li>
+                        <strong>{{ actor_data.name }}</strong> (ID: {{ actor_data.id }})
+                        {% if actor_data.aliases and actor_data.aliases|length > 0 %}
+                            <br>Aliases: {{ actor_data.aliases | join(', ') }}
+                        {% else %}
+                            <br><em>No aliases for this actor.</em>
+                        {% endif %}
+                    </li>
+                {% endfor %}
+            </ul>
+        {% else %}
+            <p>No actors found in the database. Add some actors using the form above.</p>
+        {% endif %}
+    </div>
+{% endblock %}
+```

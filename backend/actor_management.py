@@ -167,6 +167,48 @@ def get_actor_name_by_id(db_path, actor_id):
         print(f"Database error while fetching name for actor ID {actor_id}: {e}")
         return None
 
+def get_all_actors_with_aliases(db_path):
+    """
+    Retrieves all actors and their associated aliases.
+
+    Returns:
+        list: A list of dictionaries, where each dictionary contains:
+              {'id': actor_id, 'name': actor_name, 'aliases': [list_of_aliases]}
+              Returns an empty list if no actors are found or in case of an error.
+    """
+    actors_data = []
+    try:
+        with _get_db_connection(db_path) as conn:
+            cursor = conn.cursor()
+
+            # Fetch all actors
+            cursor.execute("SELECT id, name FROM actors ORDER BY name COLLATE NOCASE")
+            all_actors = cursor.fetchall()
+
+            for actor_row in all_actors:
+                actor_id = actor_row['id']
+                actor_name = actor_row['name']
+
+                # Fetch aliases for the current actor
+                aliases_cursor = conn.cursor() # Use a new cursor for this sub-query
+                aliases_cursor.execute("SELECT alias_name FROM actor_aliases WHERE actor_id = ? ORDER BY alias_name COLLATE NOCASE", (actor_id,))
+                aliases_rows = aliases_cursor.fetchall()
+                aliases = [alias_row['alias_name'] for alias_row in aliases_rows]
+
+                actors_data.append({
+                    'id': actor_id,
+                    'name': actor_name,
+                    'aliases': aliases
+                })
+        return actors_data
+    except sqlite3.Error as e:
+        print(f"Database error while fetching all actors with aliases: {e}")
+        return [] # Return empty list on error
+    except Exception as e:
+        print(f"An unexpected error occurred in get_all_actors_with_aliases: {e}")
+        return []
+
+
 if __name__ == '__main__':
     print(f"Using database: {DEFAULT_DB_PATH}")
     if not os.path.exists(DEFAULT_DB_PATH):
@@ -269,3 +311,13 @@ if __name__ == '__main__':
 
 
         print("\n--- End of Tests ---")
+
+        # Test get_all_actors_with_aliases
+        print("\n--- Getting All Actors with Aliases ---")
+        all_actors_data = get_all_actors_with_aliases(DEFAULT_DB_PATH)
+        if all_actors_data:
+            print(f"Found {len(all_actors_data)} actors:")
+            for ad in all_actors_data:
+                print(f"  ID: {ad['id']}, Name: {ad['name']}, Aliases: {ad['aliases']}")
+        else:
+            print("No actors found or error fetching all actors.")
