@@ -1,2 +1,5 @@
 Flask>=2.0
-```
+ollama>=0.2.0
+duckduckgo_search>=5.0.0
+beautifulsoup4>=4.0.0
+requests>=2.20.0
