@@ -1,251 +1,326 @@
 import re
+import logging
+from typing import Tuple, List, Optional, Dict, Any
 
-def parse_filename(filename_string):
+# Configure logging for the module.
+# If this module is imported, the application's logging config will likely take precedence.
+# If run directly, this basicConfig will apply.
+logger = logging.getLogger(__name__)
+if not logger.handlers: # Add handler only if no other handlers are configured
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
+
+
+# --- Regex Patterns ---
+# Pattern for codes in square brackets, e.g., [ABC-123], [XYZ.789]
+# Allows word characters (alphanumeric + underscore), dots, and hyphens within brackets.
+CODE_PATTERN_BRACKETS = re.compile(r"\[([\w.-]+)\]")
+
+# Pattern for codes like COMPANY-CODE123 or COMPANY_CODE_001 (not in brackets).
+# Requires a word part (letters, numbers, underscores), then a hyphen or underscore,
+# then a part containing at least one digit.
+# Example: XYZ-007, PUBLISHER_CODE-123A
+CODE_PATTERN_NO_BRACKETS = re.compile(r"((?:[A-Z][A-Za-z0-9]*_)*[A-Z][A-Za-z0-9]*[-_][A-Za-z0-9]*\d[A-Za-z0-9]*)")
+
+# Pattern for actors separated by " - " (dash with spaces).
+# Allows names with word characters, spaces, apostrophes, dots, and hyphens.
+# Handles multiple actors separated by comma (,) or ampersand (&).
+# Example: " - Actor One, Actor J. Two & Dr. Third-Name"
+ACTOR_PATTERN_DASH_SEPARATOR = re.compile(r"\s-\s+((?:[A-Z][\w\s'.-]+?)(?:\s*[,&]\s*[A-Z][\w\s'.-]+?)*)$")
+
+# Suffix actor pattern: attempts to find one or two capitalized words/initials at the end of a string,
+# preceded by a space or underscore. This is a conservative heuristic.
+# Group 1 captures the actor string part (e.g., "ActorZ" or "ActorA_ActorB").
+# Example: "_ActorZ", " ActorA_ActorB", " Actor C"
+ACTOR_PATTERN_SUFFIX_HEURISTIC = re.compile(r"[_\s](([A-Z][a-z']+|[A-Z])(?:[_\s]([A-Z][a-z']+|[A-Z]))?)$")
+
+# List of common words (lowercase) that are unlikely to be actor names, especially if they are single parts.
+# Used by suffix heuristic.
+COMMON_NON_ACTOR_WORDS = [
+    'in', 'on', 'of', 'a', 'an', 'the', 'is', 'at', 'to', 'and', 'or', 'but', 'vs', 'vs.',
+    'part', 'ep', 'episode', 'vol', 'volume', 'chapter', 'scene', 'official', 'trailer',
+    'movie', 'film', 'video', 'clip', 'final', 'extended', 'uncut', 'remastered', 'ost',
+    'soundtrack', 'dvd', 'hd', 'sd', 'bd', 'cd' # Also common media terms
+]
+# Pattern to filter out whole candidate strings that look like common non-actor suffixes (e.g., "Part_1", "The_End")
+COMMON_SUFFIX_NON_ACTOR_PATTERN = re.compile(r"(?:Part|Ep|Vol|Chapter|Scene|The|An|A)[_\s]?\d+$", re.IGNORECASE)
+
+
+def _extract_code(filename_part: str) -> Tuple[Optional[str], str]:
     """
-    Parses a video filename string to extract code, actors, and title.
+    Extracts a code (bracketed or non-bracketed) from the beginning or anywhere in the filename part.
+    Bracketed codes are prioritized.
+
+    Args:
+        filename_part (str): The part of the filename to search for a code.
+
+    Returns:
+        Tuple[Optional[str], str]: (extracted_code, remaining_filename_part)
+    """
+    extracted_code: Optional[str] = None
+    remaining_filename_part: str = filename_part
+
+    # Try bracketed code first (searches anywhere in the string)
+    match_bracket_code = CODE_PATTERN_BRACKETS.search(filename_part)
+    if match_bracket_code:
+        extracted_code = match_bracket_code.group(1)
+        # Remove the matched part (group 0 includes brackets) from the string
+        remaining_filename_part = filename_part.replace(match_bracket_code.group(0), "", 1).strip(" _-.")
+        logger.debug(f"Extracted bracketed code: '{extracted_code}', remaining: '{remaining_filename_part}'")
+        return extracted_code, remaining_filename_part
+
+    # If no bracketed code, try non-bracketed code (searches anywhere)
+    # This pattern is more likely to have false positives if not handled carefully.
+    # We ensure it's not part of common series/episode markers.
+    match_no_bracket_code = CODE_PATTERN_NO_BRACKETS.search(filename_part)
+    if match_no_bracket_code:
+        potential_code = match_no_bracket_code.group(1)
+        # Filter out common series/episode patterns (e.g., _ep01, -part2)
+        if not re.search(r"[_.-](?:ep|episode|part|vol|chapter|sc)[_.-]?\d+$", potential_code, re.IGNORECASE):
+            extracted_code = potential_code
+            remaining_filename_part = filename_part.replace(match_no_bracket_code.group(0), "", 1).strip(" _-.")
+            logger.debug(f"Extracted non-bracketed code: '{extracted_code}', remaining: '{remaining_filename_part}'")
+            return extracted_code, remaining_filename_part
+        else:
+            logger.debug(f"Potential non-bracketed code '{potential_code}' filtered out as episode/part marker.")
+
+    logger.debug(f"No code extracted from: '{filename_part}'")
+    return None, filename_part
+
+
+def _extract_actors_dash_separated(filename_part: str) -> Tuple[List[str], str]:
+    """
+    Extracts actors from a filename part assuming they are at the end, separated by " - ".
+
+    Args:
+        filename_part (str): The filename part to process.
+
+    Returns:
+        Tuple[List[str], str]: (list_of_actor_names, remaining_filename_part)
+    """
+    actors: List[str] = []
+    remaining_filename_part: str = filename_part
+
+    match = ACTOR_PATTERN_DASH_SEPARATOR.search(filename_part)
+    if match:
+        actor_string = match.group(1)
+        remaining_filename_part = filename_part[:match.start()].strip(" _-.")
+        # Split actor string by comma or ampersand, then clean up each name
+        actors = [name.strip().replace("_", " ") for name in re.split(r"\s*[,&]\s*", actor_string) if name.strip()]
+        logger.debug(f"Extracted dash-separated actors: {actors}, remaining: '{remaining_filename_part}'")
+    else:
+        logger.debug("No dash-separated actors found.")
+
+    return actors, remaining_filename_part
+
+
+def _extract_actors_suffix_heuristic(filename_part: str) -> Tuple[List[str], str]:
+    """
+    Extracts actors from the suffix of a filename part using heuristics.
+    This is conservative and looks for 1-2 capitalized words/initials at the very end.
+
+    Args:
+        filename_part (str): The filename part to process.
+
+    Returns:
+        Tuple[List[str], str]: (list_of_actor_names, remaining_filename_part)
+    """
+    extracted_actors: List[str] = []
+    remaining_filename_part: str = filename_part
+
+    match = ACTOR_PATTERN_SUFFIX_HEURISTIC.search(filename_part)
+    if match:
+        actor_candidate_str: str = match.group(1) # The matched actor(s) string part e.g. "ActorA_ActorB" or "ActorName"
+        logger.debug(f"Suffix heuristic matched candidate: '{actor_candidate_str}' from separator '{match.group(0)}'")
+
+        # Filter 1: Broad filter for the whole candidate string (e.g., "_Part1", " The_End")
+        is_blacklisted_candidate: bool = False
+        if COMMON_SUFFIX_NON_ACTOR_PATTERN.search(actor_candidate_str):
+            is_blacklisted_candidate = True
+            logger.debug(f"Candidate '{actor_candidate_str}' blacklisted by COMMON_SUFFIX_NON_ACTOR_PATTERN.")
+        if actor_candidate_str.lower() in COMMON_NON_ACTOR_WORDS: # Also check if the whole string is a common word
+            is_blacklisted_candidate = True
+            logger.debug(f"Candidate '{actor_candidate_str}' blacklisted as a common non-actor word.")
+
+        if not is_blacklisted_candidate:
+            name_parts: List[str] = [p for p in re.split(r"[_\s]+", actor_candidate_str) if p] # Split and remove empty
+            valid_name_parts: List[str] = []
+
+            for part in name_parts:
+                is_valid_part = False
+                if re.fullmatch(r"[A-Z]", part): # Single uppercase letter (Initial)
+                    is_valid_part = True
+                elif re.fullmatch(r"[A-Z][a-z']+", part): # Capitalized word
+                    if part.lower() not in COMMON_NON_ACTOR_WORDS:
+                        is_valid_part = True
+                    else:
+                        logger.debug(f"Part '{part}' filtered by individual word blacklist.")
+
+                if is_valid_part:
+                    valid_name_parts.append(part)
+                else:
+                    logger.debug(f"Part '{part}' deemed invalid. Discarding candidate '{actor_candidate_str}'.")
+                    valid_name_parts = []
+                    break
+
+            if valid_name_parts:
+                # Grouping logic
+                if len(valid_name_parts) > 1 and "_" in match.group(0): # match.group(0) has the separator
+                    extracted_actors.extend(valid_name_parts)
+                elif valid_name_parts:
+                    extracted_actors.append(" ".join(valid_name_parts))
+
+                if extracted_actors:
+                    remaining_filename_part = filename_part[:match.start(0)].strip(" _-.") # Use start(0) for whole match
+                    logger.debug(f"Extracted suffix heuristic actors: {extracted_actors}, remaining: '{remaining_filename_part}'")
+
+    if not extracted_actors: # ensure logging if no actors found by this heuristic specifically
+        logger.debug(f"No suffix heuristic actors extracted from: '{filename_part}'")
+
+    return extracted_actors, remaining_filename_part
+
+
+def _normalize_title(title_candidate: str, extracted_code: Optional[str]) -> Optional[str]:
+    """
+    Normalizes and cleans the title string.
+
+    Args:
+        title_candidate (str): The raw title string.
+        extracted_code (Optional[str]): The code extracted from the filename, if any.
+
+    Returns:
+        Optional[str]: The cleaned title, or None if empty or only contained the code.
+    """
+    if not title_candidate:
+        logger.debug("Title candidate is empty.")
+        return None
+
+    # Replace common separators (dots, underscores) with spaces
+    # Preserve hyphens as they can be part of titles.
+    normalized_title: str = re.sub(r"[._]", " ", title_candidate)
+    # Consolidate multiple spaces into one
+    normalized_title = re.sub(r"\s+", " ", normalized_title).strip(" -") # Also strip leading/trailing hyphens here
+
+    # If the normalized title is the same as the code, it's likely not a real title.
+    if extracted_code and normalized_title.lower() == extracted_code.lower():
+        logger.debug(f"Normalized title '{normalized_title}' matched extracted code '{extracted_code}'. Setting title to None.")
+        return None
+
+    if not normalized_title: # Check if empty after stripping
+        logger.debug("Title became empty after normalization.")
+        return None
+
+    logger.debug(f"Normalized title: '{normalized_title}' from candidate: '{title_candidate}'")
+    return normalized_title
+
+
+def parse_filename(filename_string: str) -> Dict[str, Any]:
+    """
+    Parses a video filename string to extract code, actors, and title using helper functions.
 
     Args:
         filename_string (str): The video filename (including extension).
 
     Returns:
-        dict: A dictionary containing the extracted parts:
-              "code": str or None
-              "actors": list of str
-              "title": str or None
-              "original_filename": str
+        Dict[str, Any]: A dictionary containing the extracted parts:
+                        "code": str or None
+                        "actors": list of str (unique names)
+                        "title": str or None
+                        "original_filename": str
     """
-    original_filename = filename_string
-    filename_no_ext = filename_string.rsplit('.', 1)[0] # Remove extension for easier parsing
+    logger.info(f"Parsing filename: '{filename_string}'")
+    if not filename_string or filename_string.startswith('.'): # Basic check for empty or hidden files
+        logger.warning(f"Invalid or empty filename provided: '{filename_string}'")
+        return {
+            "code": None, "actors": [], "title": None,
+            "original_filename": filename_string
+        }
 
-    extracted_code = None
-    extracted_actors = []
-    extracted_title = None
+    filename_base: str = filename_string.rsplit('.', 1)[0] # Remove extension
+    if not filename_base: # If filename was just ".ext"
+        logger.warning(f"Filename without extension is empty for: '{filename_string}'")
+        return {
+            "code": None, "actors": [], "title": None,
+            "original_filename": filename_string
+        }
 
-    # Regex for code:
-    # Pattern 1: [ANYTHING-REASONABLE-IN-BRACKETS] (e.g., [ABC-123], [XYZ_007], [CODE789])
-    code_pattern1 = r"\[([\w.-]+)\]" # Allows word chars, dots, hyphens within brackets
-    # Pattern 2: COMPANY-CODE or COMPANY_CODE (e.g., XYZ-007, Publisher_CODE)
-    # Requires a structure like WORD-DIGITS or WORD_DIGITS. At least one digit is required.
-    # Allows for multiple words before the hyphen/underscore e.g. LONG_COMPANY_NAME-123
-    # Removed \b at the end as it prevented matching if code was followed by underscore.
-    code_pattern2 = r"((?:[A-Z][A-Za-z0-9]*_)*[A-Z][A-Za-z0-9]*[-_][A-Za-z0-9]*\d[A-Za-z0-9]*)"
+    # Step 1: Extract Code
+    extracted_code, remainder_after_code = _extract_code(filename_base)
 
+    # Step 2: Extract Actors (Dash Separated first)
+    actors_dash, remainder_after_dash_actors = _extract_actors_dash_separated(remainder_after_code)
 
-    match_code1 = re.search(code_pattern1, filename_no_ext)
-    if match_code1:
-        extracted_code = match_code1.group(1)
-        # Remove the matched code from the string to simplify further parsing
-        filename_no_ext = filename_no_ext.replace(match_code1.group(0), "").strip()
-    else:
-        match_code2 = re.search(code_pattern2, filename_no_ext)
-        if match_code2:
-            potential_code = match_code2.group(1)
-            # Filter out common series/episode patterns (e.g., _ep01, -part2)
-            # Check if the potential code ends with an episode/part marker followed by numbers.
-            if not re.search(r"[_.-](?:ep|episode|part|vol|chapter|sc)[_.-]?\d+$", potential_code, re.IGNORECASE):
-                extracted_code = potential_code
-                filename_no_ext = filename_no_ext.replace(match_code2.group(0), "").strip()
-            else: # Code looked like an episode/part, so don't extract it as code
-                pass # extracted_code remains None or its value from code_pattern1
+    # Step 3: Extract Actors (Suffix Heuristic if no dash actors found)
+    actors_suffix: List[str] = []
+    remainder_after_suffix_actors: str = remainder_after_dash_actors # Initialize with previous remainder
 
-    # Regex for actors:
-    # This is a challenging part and will be kept simple for now.
-    # It tries to find names that are often at the end, sometimes after " - ".
-    # Regex for actors:
-    # Pattern 1: " - Actor Name1, Actor Name2" or " - Actor Name1 & Actor Name2" or " - SingleActorName"
-    # Looks for a hyphen separator, then capitalized words (potentially with spaces, underscores, or dots)
-    # separated by common delimiters like ',', '&'.
-    actor_pattern_dash_separator = r"\s-\s+((?:[A-Z][\w\s'.-]+?)(?:\s*[,&]\s*[A-Z][\w\s'.-]+?)*)$"
+    if not actors_dash: # Only run suffix if dash separator didn't yield actors
+        actors_suffix, remainder_after_suffix_actors = _extract_actors_suffix_heuristic(remainder_after_dash_actors)
 
-    # Pattern 2: Underscore or space separated actors at the end of the string if no clear " - " separator
-    # This is more heuristic. Looks for sequences of capitalized words, possibly joined by underscores.
-    # Example: Cool_Movie_Clip_ActorA_ActorB.mp4 -> ActorA, ActorB
-    # Example: Movie Title Actor One Actor Two.mp4 -> Actor One, Actor Two
-    # This pattern attempts to identify segments that are likely actor names.
-    # It looks for words starting with a capital letter, possibly containing more capital letters (Initials)
-    # or hyphens (Jean-Claude).
-    actor_pattern_suffix_heuristic = r"((?:[A-Z][a-zA-Z'-]+(?:_[A-Z][a-zA-Z'-]+)*)(?:[\s_]+(?:[A-Z][a-zA-Z'-]+(?:_[A-Z][a-zA-Z'-]+)*))*)$"
+    # Combine actor lists and ensure uniqueness (case-insensitive for uniqueness check, preserve first encountered case)
+    # Using a dict to preserve order and uniqueness based on lowercase name
+    combined_actors_map: Dict[str, str] = {}
+    for actor_name in actors_dash + actors_suffix:
+        if actor_name.lower() not in combined_actors_map:
+            combined_actors_map[actor_name.lower()] = actor_name
 
+    final_actors_list: List[str] = list(combined_actors_map.values())
+    logger.debug(f"Combined and unique actors: {final_actors_list}")
 
-    working_string = filename_no_ext # String to be progressively shortened
+    # Step 4: Normalize Title from the final remainder
+    # The remainder used for title is from the step that last extracted actors, or from code extraction if no actors.
+    title_candidate: str = remainder_after_suffix_actors # This holds the correct remainder
+    extracted_title = _normalize_title(title_candidate, extracted_code)
 
-    # Attempt to find actors using the " - " separator first
-    match_actors_dash = re.search(actor_pattern_dash_separator, working_string)
-    if match_actors_dash:
-        actor_string = match_actors_dash.group(1)
-        # Remove the matched actor string from the working_string for title extraction
-        working_string = working_string[:match_actors_dash.start()].strip(" -_.")
-        # Split actor string by comma or ampersand, then clean up each name
-        extracted_actors = [name.strip().replace("_", " ") for name in re.split(r"\s*[,&]\s*", actor_string)]
-    else:
-        # If no " - " separator, try the heuristic suffix pattern
-        # Split the string by common separators (space, underscore, dot)
-        # and evaluate the last few parts if they look like names.
-        parts = re.split(r"[_\s.]+", working_string)
-        potential_actor_segments = []
-        # Heuristic: check the last 1 to 4 segments
-        # This needs to be conservative to avoid grabbing title parts.
-        # Only consider segments that are capitalized or common actor patterns.
-        num_parts_to_check = min(len(parts), 4)
-        for i in range(1, num_parts_to_check + 1):
-            segment = " ".join(parts[-i:]) # e.g., "Actor", "Actor B", "Actor C D"
-            # A simple check: if it contains at least one capitalized word.
-            # More robust: use a regex that matches actor-like names.
-            # This is still very basic.
-            if re.search(r"\b[A-Z][a-z']+\b", segment): # Basic check for capitalized word
-                 # Check if it's not a common non-actor word (very basic list)
-                if not any(kw in segment.lower() for kw in ['part', 'ep', 'the', 'clip']):
-                    # If a potential segment is found, try to match it more formally
-                    # This is tricky; for now, let's assume if the last part(s) look like names, they are.
-                    # The `actor_pattern_suffix_heuristic` can be too greedy if not anchored.
-                    # Let's try to match the whole end of the string for actors if no dash separator
-
-                    # Re-join parts to form a string to test suffix pattern on
-                    # This is a bit redundant if we are already iterating parts
-                    # Let's refine this:
-                    pass # Placeholder for a better suffix actor extraction
+    # Fallback title if everything else fails (e.g. filename was just code)
+    if not extracted_title and not final_actors_list and extracted_code and filename_base.lower() == extracted_code.lower():
+        extracted_title = None # Code was the entire filename, no separate title
+    elif not extracted_title and filename_base and not final_actors_list and not extracted_code:
+        # If nothing was extracted, the whole original filename_base (cleaned) is the title
+        extracted_title = _normalize_title(filename_base, None)
 
 
-        # Revised Suffix Actor Extraction:
-        # Try to match known actor patterns at the end of the string.
-        # This will be an iterative process.
-        # Consider words like "Actor", "Actress" as keywords to help.
-        # For now, let's try a simpler approach: if the last few words are capitalized.
-
-        # Simplified Suffix Actor Extraction:
-        # Only attempts to find actors if they appear at the very end of the string (after code removal),
-        # matching patterns like "_ActorName", " ActorName", "_ActorA_ActorB", or " ActorA ActorB".
-        # This is intentionally conservative to reduce false positives from title words.
-        else:
-            # working_string is filename_no_ext after code removal.
-            # Regex tries to capture one or two capitalized words at the end, preceded by a space or underscore.
-            # Group 1 captures the whole actor string (e.g., "ActorA_ActorB" or "ActorName").
-            suffix_actor_match = re.search(r"[_\s](([A-Z][a-z']+|[A-Z])(?:[_\s]([A-Z][a-z']+|[A-Z]))?)$", working_string)
-
-            if suffix_actor_match:
-                actor_candidate_str = suffix_actor_match.group(1) # The matched actor(s) string part e.g. "ActorA_ActorB" or "ActorName"
-
-                # Filter 1: Broad filter for the whole candidate string
-                # Avoid common filename suffixes that are not actors like "_Part1", " The_End", "final"
-                is_blacklisted_candidate = False
-                if re.search(r"(?:Part|Ep|Vol|Chapter|Scene|The|An|A)[_\s]?\d+$", actor_candidate_str, re.IGNORECASE):
-                    is_blacklisted_candidate = True
-                if actor_candidate_str.lower() in ['final', 'extended', 'uncut', 'remastered', 'official', 'trailer', 'movie', 'film', 'ost', 'soundtrack']:
-                    is_blacklisted_candidate = True
-
-                if not is_blacklisted_candidate:
-                    name_parts = re.split(r"[_\s]+", actor_candidate_str)
-                    valid_name_parts = []
-
-                    # Filter 2: Per-word filter for parts of names
-                    # Each part should look like a name and not be a common stop-word (unless it's a single initial)
-                    individual_word_blacklist = ['in', 'on', 'of', 'a', 'an', 'the', 'is', 'at', 'to', 'and', 'or', 'but', 'vs', 'vs.']
-
-                    for part in name_parts:
-                        is_valid_part = False
-                        if re.fullmatch(r"[A-Z]", part): # Single uppercase letter (Initial)
-                            is_valid_part = True
-                        elif re.fullmatch(r"[A-Z][a-z']+", part): # Capitalized word
-                            if part.lower() not in individual_word_blacklist:
-                                is_valid_part = True
-
-                        if is_valid_part:
-                            valid_name_parts.append(part)
-                        else: # Invalid part encountered, means the whole candidate is likely not an actor string
-                            valid_name_parts = [] # Discard all parts for this candidate
-                            break
-
-                    if valid_name_parts:
-                        # Decide how to group the valid_name_parts
-                        final_actors_suffix = []
-                        # suffix_actor_match.group(0) includes the separator, e.g., "_ActorA_ActorB"
-                        # If original separator included an underscore and we have multiple valid parts,
-                        # assume they are distinct actors or parts of a name that were underscore_separated.
-                        if len(valid_name_parts) > 1 and "_" in suffix_actor_match.group(0):
-                            final_actors_suffix.extend(valid_name_parts) # Treat as potentially separate if underscore was involved
-                        elif valid_name_parts: # Single valid part, or space-separated parts that form one name.
-                            final_actors_suffix.append(" ".join(valid_name_parts))
-
-                        if final_actors_suffix:
-                            extracted_actors = final_actors_suffix
-                            working_string = working_string[:suffix_actor_match.start(0)].strip(" _-.")
-            # If no suffix actor match or filtered out, working_string remains as is.
-
-    # Title is what's left in 'working_string' after removing code and actors
-    # Clean up common separators like dots, underscores, leading/trailing hyphens
-
-    # Remove any leftover actor strings if actors were extracted by suffix (less precise)
-    # This is a bit dangerous, as it might remove parts of the title if actor extraction was too greedy.
-    # For now, the working_string should already have actors removed if they were found.
-
-    title_candidate = working_string.strip()
-
-    # General cleanup for title: replace multiple spaces/underscores, strip unwanted chars
-    extracted_title = re.sub(r"[._]", " ", title_candidate) # Replace dots/underscores with spaces
-    extracted_title = re.sub(r"-\s*-", "-", extracted_title) # double dash to single
-    extracted_title = re.sub(r"\s+", " ", extracted_title).strip(" -") # Normalize spaces and strip
-
-    if not extracted_title and not extracted_code and not extracted_actors and filename_no_ext:
-        # If nothing else was extracted, the whole filename (no ext) is the title
-        extracted_title = filename_no_ext.replace("_"," ").strip()
-    elif not extracted_title and extracted_code and not extracted_actors:
-        # If only code was found, and title is empty, it implies there was no title string.
-        extracted_title = None
-
-
-    # Post-processing: if title is just the code, set title to None
-    if extracted_title and extracted_code and extracted_title.lower() == extracted_code.lower():
-        extracted_title = None
-
-    return {
+    result = {
         "code": extracted_code,
-        "actors": list(set(extracted_actors)), # Remove duplicates
-        "title": extracted_title if extracted_title else None,
-        "original_filename": original_filename
+        "actors": final_actors_list,
+        "title": extracted_title,
+        "original_filename": filename_string
     }
+    logger.info(f"Parsed result for '{filename_string}': {result}")
+    return result
+
 
 if __name__ == '__main__':
+    # Configure more verbose logging for direct script execution
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(module)s - %(funcName)s - %(message)s', force=True)
+
     test_filenames = [
         "[ABC-123] The Video Title - Actor Name1, Actor Name2.mp4",
         "XYZ-007 Another Movie - SingleActor.avi",
-        "[DEF-456] Third.Title.ActorX.mkv",
-        "Publisher_CODE_Yet_Another_Film_Actor_A_Actor_B.mp4",
+        "[DEF-456] Third.Title.ActorX.mkv", # ActorX might be suffix
+        "Publisher_CODE_A.Film.About.Stuff_Actor_One_Actor_Two.webm", # CODE might be company code
         "Just A Title - Some Actor.mov",
-        "Cool_Movie_Clip_UnknownActor.webm",
+        "Cool_Movie_Clip_UnknownActor.webm", # UnknownActor might be suffix
         "ANOTHER_CODE-001_A_Different_Film_With_Actors_Like_Actor_One_And_Actor_Two.mkv",
         "[GHI-789] Title.With.Dots - Actor1 & Actor2.mp4",
-        "MyMovie_ActorZ.mp4",
-        "Series_Name_Ep_01_Title_Part_Actor_Person_Actress_Another.mp4",
-        "CODE123_Title_With_Underscores_Actor_One_Actor_Two.mkv",
-        "NoCodeTitle_ActorName.mp4",
+        "MyMovie_ActorZ.mp4", # ActorZ as suffix
+        "Series_Name_Ep_01_Title_Part_Actor_Person_Actress_Another.mp4", # Suffix actors
+        "CODE123_Title_With_Underscores_Actor_One_Actor_Two.mkv", # CODE123 might be code
+        "NoCodeTitle_ActorName.mp4", # ActorName as suffix
         "JustATitleNoActors.mp4",
         "[ONLYCODE-001].mp4",
-        "Actor_Only_In_Name.mp4",
-        "MOVIE_TITLE_ActressA_ActorB_ActorC.mp4",
-        "Film Title With Spaces - Actor One, Actor Two & Actor Three.mkv"
+        "Actor_Only_In_Name.mp4", # Suffix actors
+        "MOVIE_TITLE_ActressA_ActorB_ActorC.mp4", # Suffix actors
+        "Film Title With Spaces - Actor One, Actor Two & Actor Three.mkv",
+        "[XYZ789] Another Great Film.mkv", # Test from unit tests (suffix actor "Great Film")
+        "My Show S01E02 - Specific Episode.mp4", # Test from unit tests
+        "[SHOW-01] My Show S01E02 - Specific Episode.mp4", # Test from unit tests
+        "Movie_Title_Actor_J_R.mkv", # Test from unit tests (suffix J_R)
+        "CODE123.mp4" # Test from unit tests (code without separator)
     ]
 
     for filename in test_filenames:
+        logger.debug(f"\n--- Testing filename: {filename} ---")
         result = parse_filename(filename)
-        print(f"Original: {filename}")
-        print(f"Parsed:   {result}\n")
+        print(f"Original: {filename}\nParsed:   {result}\n")
 
-    # Example with more complex actor names
-    # print(parse_filename("[COMP-001] My Awesome Movie - John B. Goode, Mary Jane Watson.mp4"))
-    # print(parse_filename("Film_With_Actor_J_P_Morgan.mp4"))
-    # print(parse_filename("Film_With_Actor_Jean-Claude_Van_Damme.mp4")) # This will be hard
-    # print(parse_filename("My_Video_Title_AB_CD_EF.mp4")) #Potential actors AB, CD, EF
-    # print(parse_filename("My_Video_Title_ActorA_B_ActorC_D.mp4")) #Potential actors A B, C D
-    # print(parse_filename("My_Film_With_Actor_MA_PhD.mp4")) # MA, PhD could be mistaken for actors
-    # print(parse_filename("My_Video_With_Acronym_NASA_And_Actor_XYZ.mp4"))
-
-    print("\n--- Testing specific cases ---")
-    print(f"Test: [C-007] The.Title - Actor.Name.mp4 -> {parse_filename('[C-007] The.Title - Actor.Name.mp4')}")
-    print(f"Test: Publisher_CODE_The_Movie_Actress_Actor.mp4 -> {parse_filename('Publisher_CODE_The_Movie_Actress_Actor.mp4')}")
-    print(f"Test: Just A Title - Some_Actor.mov -> {parse_filename('Just A Title - Some_Actor.mov')}")
-    print(f"Test: My_Movie_ActorFullName.mp4 -> {parse_filename('My_Movie_ActorFullName.mp4')}")
-    print(f"Test: [CODE-1] Title - Actor1,Actor2.mp4 -> {parse_filename('[CODE-1] Title - Actor1,Actor2.mp4')}")
-    print(f"Test: Film Title - Actor A, Actor B.mkv -> {parse_filename('Film Title - Actor A, Actor B.mkv')}")
-    print(f"Test: Movie Clip.mp4 -> {parse_filename('Movie Clip.mp4')}")
-    print(f"Test: [XYZ-123].mp4 -> {parse_filename('[XYZ-123].mp4')}") # Should be code, no title
-    print(f"Test: ActorNameOnly.mp4 -> {parse_filename('ActorNameOnly.mp4')}")
+    logger.info("--- Filename Parser Tests Complete ---")

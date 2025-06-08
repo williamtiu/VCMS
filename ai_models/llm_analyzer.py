@@ -1,154 +1,223 @@
 import ollama
 import logging
+from typing import Optional, Dict, List, Any # Added more types
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configure module-level logger
+logger = logging.getLogger(__name__)
+# Note: BasicConfig for the root logger (if no handlers are present) will be set
+# in the __main__ block for direct script execution, or by the application using this module.
 
-DEFAULT_OLLAMA_MODEL = 'llama3'
-DEFAULT_OLLAMA_HOST = 'http://localhost:11434'
+DEFAULT_OLLAMA_MODEL: str = 'llama3'
+DEFAULT_OLLAMA_HOST: str = 'http://localhost:11434'
 
-ollama_client = None
+ollama_client: Optional[ollama.Client] = None
 
-def configure_ollama_client(host=DEFAULT_OLLAMA_HOST):
+def configure_ollama_client(host: str = DEFAULT_OLLAMA_HOST) -> bool:
+    """
+    Configures the global Ollama client for a given host.
+
+    Attempts to connect to the Ollama server at the specified host and initializes
+    the global `ollama_client` if successful.
+
+    Args:
+        host (str): The URL of the Ollama server (e.g., 'http://localhost:11434').
+                    Defaults to `DEFAULT_OLLAMA_HOST`.
+
+    Returns:
+        bool: True if the client was successfully configured, False otherwise.
+    """
     global ollama_client
     try:
-        logging.info(f"Attempting to configure Ollama client for host {host}...")
+        logger.info(f"Attempting to configure Ollama client for host: {host}")
+        # Create a temporary client to test connection and list models
         temp_client = ollama.Client(host=host)
-        temp_client.list() # Perform a lightweight call on the instance to check connectivity
-        ollama_client = temp_client # If successful, assign to global
-        logging.info(f"Successfully connected to Ollama at {host}. Client configured.")
+        temp_client.list() # Perform a lightweight call to check connectivity
+        ollama_client = temp_client # If successful, assign to global client
+        # Accessing protected member _host for logging purposes
+        logger.info(f"Successfully connected to Ollama at {ollama_client._host}. Global client configured.")
+        return True
     except Exception as e:
-        logging.error(f"Failed to connect to Ollama at {host}. Error: {e}")
-        logging.error("Please ensure Ollama is running and accessible, and a model is available/pulled.")
+        logger.error(f"Failed to connect to Ollama at {host}. Error: {e}", exc_info=True)
+        logger.error("Please ensure Ollama is running, accessible, and a model is available/pulled.")
         ollama_client = None
+        return False
 
-def generate_ollama_response(prompt: str, model: str = DEFAULT_OLLAMA_MODEL, host: str = None) -> str | None:
+def generate_ollama_response(prompt: str, model: str = DEFAULT_OLLAMA_MODEL, host: Optional[str] = None) -> Optional[str]:
+    """
+    Generates a response from an Ollama model for a given prompt.
+
+    It can use a pre-configured global client, a temporary client for a specified host,
+    or attempt to configure the global client if not already set up.
+
+    Args:
+        prompt (str): The prompt to send to the LLM.
+        model (str): The name of the Ollama model to use (e.g., 'llama3').
+                     Defaults to `DEFAULT_OLLAMA_MODEL`.
+        host (Optional[str]): The specific Ollama host URL to use for this request.
+                              If None, uses the globally configured client or default host.
+                              Defaults to None.
+
+    Returns:
+        Optional[str]: The content of the LLM's response as a string, or None if an error occurs.
+    """
     global ollama_client
-    current_client = ollama_client
+    current_client_to_use: Optional[ollama.Client] = None
+    client_host_info: str = "N/A"
 
-    # If a specific host is provided for this call, try to use it
-    if host and (not ollama_client or ollama_client._host != host): # Check if different from global client or global is None
+    if host:
+        logger.info(f"Host parameter provided: '{host}'. Attempting to use a temporary client for this host.")
         try:
-            logging.info(f"Attempting to use temporary Ollama client for host: {host}")
-            # Create a new client instance for the temporary host
             temp_local_client = ollama.Client(host=host)
-            temp_local_client.list() # Perform a lightweight call on the instance
-            current_client = temp_local_client # Use this client for the current operation
-            logging.info(f"Using temporary Ollama client for host: {host}")
+            temp_local_client.list() # Verify connection to this specific host
+            current_client_to_use = temp_local_client
+            client_host_info = host # Accessing protected member _host for logging purposes
+            logger.info(f"Successfully created temporary client for host: {host}")
         except Exception as e:
-            logging.error(f"Failed to connect to temporary Ollama host {host}. Error: {e}")
-            return None
+            logger.error(f"Failed to connect to specified Ollama host '{host}'. Error: {e}", exc_info=True)
+            return None # Critical failure for this specific host request
+    else:
+        # No specific host provided for the call, use global client
+        if not ollama_client:
+            logger.warning("Global Ollama client not configured. Attempting to configure with default host.")
+            if configure_ollama_client(DEFAULT_OLLAMA_HOST): # Try to configure global default
+                current_client_to_use = ollama_client # Use the now configured global client
+                if ollama_client: # Check if configure_ollama_client was successful
+                     # Accessing protected member _host for logging purposes
+                    client_host_info = ollama_client._host
+            else:
+                logger.error("Failed to configure default Ollama client. Cannot generate response.")
+                return None
+        else:
+            current_client_to_use = ollama_client
+            # Accessing protected member _host for logging purposes
+            client_host_info = ollama_client._host
+            logger.debug(f"Using pre-configured global Ollama client for host: {client_host_info}")
 
-    if not current_client:
-        logging.warning("Ollama client is not configured. Attempting last-minute default configuration.")
-        # Pass the original default host, not the potentially temporary 'host' variable for this specific call
-        configure_ollama_client(DEFAULT_OLLAMA_HOST)
-        if not ollama_client: # Check the global client again after attempt
-             logging.error("Default Ollama client configuration failed. Cannot generate response.")
-             return None
-        current_client = ollama_client # Use the now configured global client
-
-    try:
-        logging.info(f"Sending prompt to Ollama model '{model}' via client for host '{current_client._host}':\n{prompt[:200]}...")
-        response = current_client.chat(
-            model=model,
-            messages=[{'role': 'user', 'content': prompt,}]
-        )
-        response_content = response['message']['content']
-        logging.info(f"Received response from Ollama model '{model}'.")
-        return response_content.strip()
-    except Exception as e:
-        logging.error(f"Error communicating with Ollama model '{model}' via host '{current_client._host if current_client else 'N/A'}': {e}")
-        if "model not found" in str(e).lower() or \
-           "models are available" in str(e).lower() or \
-           "pull it" in str(e).lower() or \
-           "status code 404" in str(e).lower(): # 404 can also mean model not found on some Ollama versions
-            logging.error(f"Model '{model}' not found or not accessible. Ensure model is pulled in Ollama (e.g., `ollama pull {model}`).")
+    if not current_client_to_use:
+        logger.error("No valid Ollama client available to generate response.")
         return None
 
-def analyze_text_with_llm(text_to_analyze: str, task_description: str, model: str = DEFAULT_OLLAMA_MODEL) -> str | None:
+    try:
+        logger.info(f"Sending prompt to Ollama model '{model}' via host '{client_host_info}':\n{prompt[:200]}...") # Log first 200 chars
+        response: Dict[str, Any] = current_client_to_use.chat(
+            model=model,
+            messages=[{'role': 'user', 'content': prompt}]
+        )
+        response_content: Optional[str] = response.get('message', {}).get('content')
+        if response_content is None:
+            logger.error(f"Ollama response did not contain 'message.content' for model '{model}'. Full response: {response}")
+            return None
+
+        logger.info(f"Received response from Ollama model '{model}'.")
+        return response_content.strip()
+    except Exception as e:
+        logger.error(f"Error communicating with Ollama model '{model}' via host '{client_host_info}': {e}", exc_info=True)
+        # More specific error check for model not found
+        error_str_lower = str(e).lower()
+        if "model not found" in error_str_lower or \
+           "models are available" in error_str_lower or \
+           "pull it" in error_str_lower or \
+           "status code 404" in error_str_lower: # 404 can also mean model not found
+            logger.error(
+                f"Model '{model}' not found or not accessible on host '{client_host_info}'. "
+                f"Ensure model is pulled in Ollama (e.g., `ollama pull {model}`)."
+            )
+        return None
+
+def analyze_text_with_llm(text_to_analyze: str, task_description: str, model: str = DEFAULT_OLLAMA_MODEL) -> Optional[str]:
+    """
+    Analyzes a given text using an LLM to perform a specific task.
+
+    Constructs a prompt by combining the task description and the text to be analyzed,
+    then calls `generate_ollama_response` to get the LLM's analysis.
+
+    Args:
+        text_to_analyze (str): The text content to be analyzed by the LLM.
+        task_description (str): A description of the task for the LLM to perform
+                                (e.g., "Extract keywords:", "Summarize this text:").
+        model (str): The name of the Ollama model to use.
+                     Defaults to `DEFAULT_OLLAMA_MODEL`.
+
+    Returns:
+        Optional[str]: The LLM's response as a string, or None if an error occurs.
+    """
+    if not text_to_analyze or not text_to_analyze.strip():
+        logger.warning("analyze_text_with_llm called with empty text_to_analyze.")
+        return None
+    if not task_description or not task_description.strip():
+        logger.warning("analyze_text_with_llm called with empty task_description.")
+        return None
+
     prompt = f"{task_description}\n\n---\nText to analyze:\n\"\"\"{text_to_analyze}\n\"\"\"\n\nResponse:"
     return generate_ollama_response(prompt, model)
 
 if __name__ == '__main__':
-    # Initial configuration attempt.
-    # The script will try to connect to DEFAULT_OLLAMA_HOST.
-    # If this host is not available at script startup, ollama_client will be None.
-    # generate_ollama_response has a fallback to try configuring again if client is None.
-    configure_ollama_client()
+    # Configure logging for direct script execution to see all levels of logs from this module
+    logging.basicConfig(level=logging.DEBUG,
+                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                        force=True) # force=True to override any root logger config from imports
 
-    if ollama_client:
-        print(f"--- Ollama client configured. Testing with model: {DEFAULT_OLLAMA_MODEL} on host {ollama_client._host} ---")
+    logger.info(f"--- Testing llm_analyzer.py with default host: {DEFAULT_OLLAMA_HOST} ---")
 
-        print("\n--- Test 1: Simple Question ---")
+    # Attempt initial configuration. This is important for the tests that rely on the global client.
+    client_configured_for_tests = configure_ollama_client()
+
+    if client_configured_for_tests and ollama_client: # Check both the return and the global var
+        logger.info(f"--- Ollama client configured for tests. Target host: {ollama_client._host} ---") # Accessing protected member for logging
+
+        logger.info("\n--- Test 1: Simple Question ---")
         prompt1 = "What is the capital of France? Respond with only the name of the capital."
         response1 = generate_ollama_response(prompt1)
         if response1:
-            print(f"Prompt: {prompt1}")
-            print(f"Response: {response1}")
+            logger.info(f"Test 1 Prompt: {prompt1}")
+            logger.info(f"Test 1 Response: {response1}")
         else:
-            print(f"Failed to get response for Test 1 using model {DEFAULT_OLLAMA_MODEL}.")
+            logger.warning(f"Test 1 Failed: No response for model {DEFAULT_OLLAMA_MODEL}.")
 
-        print("\n--- Test 2: Title Suggestion ---")
-        video_desc_title = "A video showcasing the process of baking a sourdough bread from scratch, including starter maintenance, mixing, shaping, and baking."
+        logger.info("\n--- Test 2: Title Suggestion (using analyze_text_with_llm) ---")
+        video_desc_title = "A video showcasing the process of baking sourdough bread from scratch, including starter maintenance, mixing, shaping, and baking."
         task_title = "Suggest a concise and informative title for a video based on the following description. The title should be suitable for a video platform. Respond with only the title."
         suggested_title = analyze_text_with_llm(video_desc_title, task_title)
         if suggested_title:
-            print(f"Video Description: {video_desc_title}")
-            print(f"Suggested Title: {suggested_title}")
+            logger.info(f"Test 2 Video Description: {video_desc_title}")
+            logger.info(f"Test 2 Suggested Title: {suggested_title}")
         else:
-            print(f"Failed to get title suggestion for Test 2 using model {DEFAULT_OLLAMA_MODEL}.")
+            logger.warning(f"Test 2 Failed: No title suggestion for model {DEFAULT_OLLAMA_MODEL}.")
 
-        print("\n--- Test 3: Actor Extraction ---")
-        text_actors = "The film 'Cosmic Adventure' stars Nova Starlight, Orion Nebula, and introducing Celeste Moon. Produced by Galaxy Pictures."
-        task_actors = "Extract all actor names from the following text. List each name on a new line. If multiple actors, separate them by newlines. Do not include any other text or explanation."
-        extracted_actors = analyze_text_with_llm(text_actors, task_actors)
-        if extracted_actors:
-            print(f"Text for Analysis: {text_actors}")
-            print(f"Extracted Actors:\n{extracted_actors}")
+        logger.info("\n--- Test 3: Model Not Available ---")
+        response3 = generate_ollama_response("Test prompt for non-existent model.", model="non_existent_model_12345")
+        if not response3:
+            logger.info("Test 3 Passed: Correctly failed to get response for non-existent model.")
         else:
-            print(f"Failed to extract actors for Test 3 using model {DEFAULT_OLLAMA_MODEL}.")
-
-        print("\n--- Test 4: Publisher Identification ---")
-        text_publisher = "This incredible footage was brought to you by NatureVids Inc. and The Wildlife Trust. (c) 2024 NatureVids Incorporated."
-        task_publisher = "Identify the main publisher or company name from the following text. Respond with only the most prominent publisher name."
-        identified_publisher = analyze_text_with_llm(text_publisher, task_publisher)
-        if identified_publisher:
-            print(f"Text for Analysis: {text_publisher}")
-            print(f"Identified Publisher: {identified_publisher}")
-        else:
-            print(f"Failed to identify publisher for Test 4 using model {DEFAULT_OLLAMA_MODEL}.")
-
-        print("\n--- Test 5: Model Not Available ---")
-        # This test assumes 'non_existent_model_12345' is not a real model.
-        response5 = generate_ollama_response("Test prompt for non-existent model.", model="non_existent_model_12345")
-        if not response5:
-            print("Correctly failed to get response for non-existent model (Test 5).")
-        else:
-            print(f"ERROR: Unexpectedly got response for non-existent model: {response5}")
-
+            logger.error(f"Test 3 FAILED: Unexpectedly got response for non-existent model: {response3}")
     else:
-        print(f"Ollama client could not be configured initially for host {DEFAULT_OLLAMA_HOST}. Some tests might try re-configuration.")
+        logger.warning("\nOllama client could not be configured with default host. Skipping tests requiring an active client.")
+        logger.warning(f"Please ensure Ollama is running, '{DEFAULT_OLLAMA_MODEL}' model is pulled, and Ollama is accessible at {DEFAULT_OLLAMA_HOST}.")
 
-    # Test host override / unavailable host explicitly outside the initial if ollama_client check
-    # to ensure generate_ollama_response handles this, even if global client is None initially.
-    print("\n--- Test 6: Ollama Host Not Available (using explicit bad host) ---")
-    # Using a known non-ollama port for testing connection failure to a specific host.
-    response6 = generate_ollama_response("Test prompt for bad host.", host="http://localhost:12345")
-    if not response6:
-        print("Correctly failed to get response from unavailable Ollama host http://localhost:12345 (Test 6).")
+    logger.info("\n--- Test 4: Ollama Host Not Available (using explicit bad host) ---")
+    # This test should always run, regardless of initial client configuration status.
+    bad_host = "http://localhost:12345" # A port where Ollama is not expected to run
+    response4 = generate_ollama_response("Test prompt for bad host.", host=bad_host, model=DEFAULT_OLLAMA_MODEL)
+    if not response4:
+        logger.info(f"Test 4 Passed: Correctly failed to get response from unavailable Ollama host {bad_host}.")
     else:
-        print(f"ERROR: Unexpectedly got response from bad host http://localhost:12345: {response6}")
+        logger.error(f"Test 4 FAILED: Unexpectedly got response from bad host {bad_host}: {response4}")
 
-    print("\n--- Test 7: Using default client after a failed temporary host attempt (if client was configured) ---")
-    if ollama_client: # This test is only meaningful if the global client was configured.
-        prompt7 = "Should this still work with the default client?"
-        response7 = generate_ollama_response(prompt7) # No host specified, should use global client
-        if response7:
-            print(f"Prompt: {prompt7}")
-            print(f"Response: {response7} (using default client at {ollama_client._host})")
+    logger.info("\n--- Test 5: Using default client after a failed temporary host attempt (if default client was configured) ---")
+    if client_configured_for_tests and ollama_client: # Only meaningful if default client was initially okay
+        prompt5 = "Does the default client connection persist after a failed temporary host attempt?"
+        # First, make a call to a bad host that will fail
+        generate_ollama_response("This call to bad host will fail.", host=bad_host, model=DEFAULT_OLLAMA_MODEL)
+        logger.info("Made a call to a bad host. Now testing default client...")
+        # Then, make a call without specifying host, relying on the global client
+        response5 = generate_ollama_response(prompt5, model=DEFAULT_OLLAMA_MODEL)
+        if response5:
+            # Accessing protected member _host for logging
+            logger.info(f"Test 5 Prompt: {prompt5}")
+            logger.info(f"Test 5 Response: {response5} (using default client at {ollama_client._host})")
         else:
-            print(f"Failed to get response for Test 7 using default client for model {DEFAULT_OLLAMA_MODEL}.")
+            logger.warning(f"Test 5 Failed: No response using default client for model {DEFAULT_OLLAMA_MODEL} after temporary host failure.")
     else:
-        print("Skipping Test 7 as default Ollama client was not configured initially.")
+        logger.info("Skipping Test 5 as default Ollama client was not configured initially.")
 
-    print("\n--- End of llm_analyzer.py tests ---")
+    logger.info("\n--- End of llm_analyzer.py tests ---")
