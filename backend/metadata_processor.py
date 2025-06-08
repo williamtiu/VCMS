@@ -1,10 +1,11 @@
 import os
-import sys # For path modification
-import json # For pretty printing results
-import shutil # For creating/removing dummy files if needed
-import re # For filename sanitization
-import sqlite3 # For test verification
-import subprocess # For running DB setup in test
+import sys
+import json
+import shutil
+import re
+import sqlite3
+import subprocess
+import logging # Added logging
 
 # Adjust sys.path to ensure project modules can be imported
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -14,245 +15,269 @@ if PROJECT_ROOT not in sys.path:
 
 # Project-specific imports
 from backend.filename_parser import parse_filename
-from backend.actor_management import get_actor_id_by_name_or_alias, get_actor_name_by_id #, add_actor (potential future use)
-from ai_models.content_analysis import extract_text_from_video_frames, extract_info_from_audio
-from backend.database_operations import update_video_record # New import
+from backend.actor_management import get_actor_id_by_name_or_alias, get_actor_name_by_id, add_actor as backend_add_actor # Added add_actor
+from ai_models.content_analysis import enhance_textual_metadata, analyze_transcribed_audio # New AI functions
+from ai_models.llm_analyzer import configure_ollama_client # To configure Ollama for tests
+from backend.database_operations import update_video_record
 
-# Assuming the database is in the 'database' directory relative to the project root.
-DATABASE_DIR = os.path.join(PROJECT_ROOT, 'database') # Use PROJECT_ROOT
+# Configure logging for this module
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
+
+
+DATABASE_DIR = os.path.join(PROJECT_ROOT, 'database')
 DEFAULT_DB_PATH = os.path.join(DATABASE_DIR, 'video_management.db')
 
 
 def sanitize_filename_part(part):
-    """Removes or replaces characters not suitable for filenames."""
     if not part:
         return ""
-    # Remove characters like / : * ? " < > |
-    sanitized = re.sub(r'[\\/:*?"<>|]', '_', part)
-    # Replace multiple spaces or underscores with a single one if desired, or just strip
-    sanitized = re.sub(r'\s+', ' ', sanitized).strip() # Consolidate multiple spaces to one
+    sanitized = re.sub(r'[\\/:*?"<>|]', '_', str(part)) # Ensure part is string
+    sanitized = re.sub(r'\s+', ' ', sanitized).strip()
     return sanitized
 
 def generate_standardized_filename(consolidated_metadata, original_extension):
-    """
-    Constructs a standardized filename string based on consolidated metadata.
-    Example: [Publisher-Code] Title - Actor1, Actor2.extension
-    """
     parts = []
-
-    # Code / Publisher part
     code = consolidated_metadata.get('code')
     publisher = consolidated_metadata.get('publisher')
+    title = consolidated_metadata.get('title')
+    actors = consolidated_metadata.get('actors')
 
     code_publisher_part = None
     if code:
         code_publisher_part = f"[{sanitize_filename_part(code)}]"
-    elif publisher: # Fallback to publisher if no code
-        code_publisher_part = f"[{sanitize_filename_part(publisher)}]" # Or some other format
+    elif publisher:
+        code_publisher_part = f"[{sanitize_filename_part(publisher)}]"
 
     if code_publisher_part:
         parts.append(code_publisher_part)
 
-    # Title part
-    title = consolidated_metadata.get('title')
     if title:
         parts.append(sanitize_filename_part(title))
     else:
-        parts.append("Unknown Title") # Always include a title placeholder
+        parts.append("Unknown_Title")
 
-    # Actors part
-    actors = consolidated_metadata.get('actors') # List of {'id': ..., 'canonical_name': ...}
     if actors:
-        actor_names = sorted([sanitize_filename_part(actor['canonical_name']) for actor in actors])
+        actor_names = sorted([sanitize_filename_part(actor['canonical_name']) for actor in actors if actor.get('canonical_name')])
         if actor_names:
-             parts.append("- " + ", ".join(actor_names)) # Prepend with " - " if title exists
+             parts.append("- " + ", ".join(actor_names))
 
-    # Join parts
-    if not parts: # Should not happen if title is always present
+    base_name = " ".join(parts).strip()
+    if not base_name: # Should be rare if title is always "Unknown_Title"
         base_name = "Untitled_Video"
-    elif len(parts) == 1 and title: # Only title is present
+
+    # Refined joining logic from previous step
+    if len(parts) == 1 and title:
         base_name = parts[0]
-    elif code_publisher_part and title and not actors: # Code/Pub and Title, no actors
-        base_name = f"{code_publisher_part} {parts[1]}"
-    elif not code_publisher_part and title and actors: # Title and Actors, no code/pub
-        base_name = f"{parts[0]} {parts[1]}" # parts[0] is title, parts[1] is " - Actors"
-    elif code_publisher_part and title and actors: # All parts
-         base_name = f"{code_publisher_part} {parts[1]} {parts[2]}"
-    else: # Other combinations or just title if it's the only thing
+    elif code_publisher_part and title and not actors:
+        base_name = f"{parts[0]} {parts[1]}"
+    elif not code_publisher_part and title and actors:
+        base_name = f"{parts[0]} {parts[1]}"
+    elif code_publisher_part and title and actors:
+         base_name = f"{parts[0]} {parts[1]} {parts[2]}"
+    else:
         base_name = " ".join(parts)
 
 
-    # Ensure base_name is not excessively long (optional, OS dependent)
-    max_len = 200 # Arbitrary max length for the base filename part
+    max_len = 200
     if len(base_name) > max_len:
         base_name = base_name[:max_len].strip()
 
-    return f"{base_name}{original_extension}"
+    return f"{base_name}{original_extension if original_extension else '.unknown'}"
 
 
 def process_video_file(video_filepath, db_path):
-    """
-    Processes a video file to extract, analyze, and consolidate metadata.
-    Also updates the database with this information.
-    """
-    print(f"\nProcessing video: {video_filepath}")
+    logging.info(f"Processing video: {video_filepath}")
     if not os.path.exists(video_filepath):
-        print(f"Error: Video file not found at {video_filepath}")
+        logging.error(f"Video file not found at {video_filepath}")
         return None
 
     original_filename_with_ext = os.path.basename(video_filepath)
     original_extension = os.path.splitext(original_filename_with_ext)[1]
 
     # 1. Parse Filename
-    parsed_filename_data = parse_filename(original_filename_with_ext)
+    parsed_info = parse_filename(original_filename_with_ext)
+    logging.info(f"Parsed filename data: {parsed_info}")
 
-    # 2. Actor Lookup (Filename)
-    processed_actors_from_filename = []
-    if parsed_filename_data.get("actors"):
-        for actor_name_from_fn in parsed_filename_data["actors"]:
-            actor_id = get_actor_id_by_name_or_alias(db_path, actor_name_from_fn)
-            processed_actors_from_filename.append({
-                'name': actor_name_from_fn,
-                'id': actor_id,
-                'found_in_db': actor_id is not None
-            })
+    # 2. Actor Lookup (Filename) & Preparation for Consolidation
+    # Store as a dictionary for easy merging: key=actor_id (if exists) or name_lowercase
+    # Value: {'id': id, 'canonical_name': name, 'source': 'filename'}
+    actors_map = {}
+
+    for actor_name_from_fn in parsed_info.get("actors", []):
+        actor_id = get_actor_id_by_name_or_alias(db_path, actor_name_from_fn)
+        canonical_name = actor_name_from_fn
+        if actor_id:
+            name_from_db = get_actor_name_by_id(db_path, actor_id)
+            if name_from_db: canonical_name = name_from_db
+            if actor_id not in actors_map: # Prioritize DB confirmed actors
+                 actors_map[actor_id] = {'id': actor_id, 'canonical_name': canonical_name, 'source': 'filename_db_match'}
+        else: # Actor not in DB yet
+            # Use lowercase name as key for non-DB actors to avoid duplicates like "John Smith" and "john smith"
+            # before they get an ID.
+            if canonical_name.lower() not in actors_map:
+                 actors_map[canonical_name.lower()] = {'id': None, 'canonical_name': canonical_name, 'source': 'filename_no_db_match'}
+
 
     # 3. Content Analysis Trigger
     run_content_analysis = False
-    # Trigger if essential data is missing or if actors list is empty (even if key "actors" exists)
-    if not parsed_filename_data.get("title") or \
-       not parsed_filename_data.get("actors", []) or \
-       not parsed_filename_data.get("code"):
+    # Trigger if essential data is missing or if actors list is empty
+    if not parsed_info.get("title") or \
+       not parsed_info.get("actors", []) or \
+       not parsed_info.get("code"):
         run_content_analysis = True
-        print("Flagging for content analysis due to missing/incomplete filename metadata.")
+        logging.info("Flagging for AI content analysis due to missing/incomplete filename metadata.")
 
-    # 4. Content Analysis (Placeholder)
-    raw_content_analysis_results = {}
-    processed_actors_from_content = []
-    potential_publisher_ocr = None
-    potential_title_ocr = None
-    potential_title_audio = None
+    # 4. Content Analysis
+    ai_enhancement_results = None
+    raw_content_analysis_results = {"text_enhancements": None, "audio_analysis": None}
 
     if run_content_analysis:
-        print("Running content analysis (placeholders)...")
-        ocr_results = extract_text_from_video_frames(video_filepath)
-        audio_results = extract_info_from_audio(video_filepath)
-        raw_content_analysis_results = {"ocr": ocr_results, "audio": audio_results}
+        text_for_ai_analysis = parsed_info.get('title', '')
+        # Join existing actor names from filename parsing if available
+        temp_actors_for_ai = [data['canonical_name'] for key, data in actors_map.items() if data['source'].startswith('filename')]
+        if temp_actors_for_ai:
+             text_for_ai_analysis += " starring " + ", ".join(temp_actors_for_ai)
 
-        for actor_name_ocr in ocr_results.get("on_screen_actor_names", []):
-            actor_id = get_actor_id_by_name_or_alias(db_path, actor_name_ocr)
-            processed_actors_from_content.append({
-                'name': actor_name_ocr, 'id': actor_id,
-                'source': 'ocr_on_screen', 'found_in_db': actor_id is not None
-            })
+        text_for_ai_analysis = text_for_ai_analysis.strip()
+        if not text_for_ai_analysis:
+            text_for_ai_analysis = original_filename_with_ext
 
-        for actor_name_audio in audio_results.get("mentioned_actor_names", []):
-            actor_id = get_actor_id_by_name_or_alias(db_path, actor_name_audio)
-            processed_actors_from_content.append({
-                'name': actor_name_audio, 'id': actor_id,
-                'source': 'audio_mentioned', 'found_in_db': actor_id is not None
-            })
+        text_for_ai_analysis = text_for_ai_analysis.replace('_', ' ').replace('.', ' ').replace('-', ' ')
+        logging.info(f"Text for AI analysis: {text_for_ai_analysis}")
 
-        potential_publisher_ocr = ocr_results.get("publisher_logo_text")
-        for text_item in ocr_results.get("other_text", []):
-            if "episode" in text_item.lower() or "title" in text_item.lower() or \
-               (len(text_item.split()) > 2 and any(w.istitle() for w in text_item.split())): # Crude title check
-                potential_title_ocr = text_item
-                break
-        if audio_results.get("mentioned_title_keywords"):
-            potential_title_audio = " ".join(audio_results["mentioned_title_keywords"])
+        ai_enhancement_results = enhance_textual_metadata(text_input=text_for_ai_analysis, original_filename=original_filename_with_ext)
+        raw_content_analysis_results["text_enhancements"] = ai_enhancement_results
+
+        # Placeholder for calling analyze_transcribed_audio if/when transcription is available
+        # transcribed_audio = "Simulated transcribed audio with mentions of ActorX and keywords topicA, topicB."
+        # if transcribed_audio:
+        #    audio_analysis_results = analyze_transcribed_audio(transcribed_audio)
+        #    raw_content_analysis_results["audio_analysis"] = audio_analysis_results
 
     # 5. Consolidate Metadata
+    final_title = parsed_info.get("title")
+    if ai_enhancement_results and ai_enhancement_results.get("llm_suggested_title"):
+        # Prefer LLM title if original is short, generic, or missing
+        if not final_title or len(final_title) < 5 or "untitled" in final_title.lower() or final_title.isdigit():
+            final_title = ai_enhancement_results["llm_suggested_title"]
+            logging.info(f"Using LLM suggested title: {final_title}")
+    if not final_title: # Fallback if still no title
+         final_title = os.path.splitext(original_filename_with_ext)[0].replace("_", " ").replace(".", " ")
+         logging.info(f"Using filename as fallback title: {final_title}")
+
+
+    if ai_enhancement_results and ai_enhancement_results.get("llm_identified_actors"):
+        for actor_name_llm in ai_enhancement_results["llm_identified_actors"]:
+            actor_id = get_actor_id_by_name_or_alias(db_path, actor_name_llm)
+            canonical_name = actor_name_llm
+            if actor_id:
+                name_from_db = get_actor_name_by_id(db_path, actor_id)
+                if name_from_db: canonical_name = name_from_db
+                if actor_id not in actors_map:
+                    actors_map[actor_id] = {'id': actor_id, 'canonical_name': canonical_name, 'source': 'llm_db_match'}
+            else: # LLM found an actor not in DB
+                # Optionally, auto-add this actor to the DB:
+                # actor_id = backend_add_actor(db_path, actor_name_llm)
+                # if actor_id and actor_id not in actors_map:
+                #    actors_map[actor_id] = {'id': actor_id, 'canonical_name': actor_name_llm, 'source': 'llm_added_to_db'}
+                # For now, just record without adding to DB from here:
+                if canonical_name.lower() not in actors_map: # Check against existing non-DB actors by name
+                    actors_map[canonical_name.lower()] = {'id': None, 'canonical_name': canonical_name, 'source': 'llm_no_db_match'}
+
+
+    final_publisher = parsed_info.get("publisher") # Not typically parsed from filename by current parser
+    if ai_enhancement_results and ai_enhancement_results.get("llm_identified_publisher"):
+        # Prefer LLM publisher if found, as filename parser doesn't explicitly get it.
+        final_publisher = ai_enhancement_results["llm_identified_publisher"]
+        logging.info(f"Using LLM identified publisher: {final_publisher}")
+
+
     consolidated_metadata = {
-        "code": parsed_filename_data.get("code"),
-        "title": parsed_filename_data.get("title"),
-        "actors": [],
-        "publisher": None,
-        "filepath": video_filepath, # Original filepath
-        "duration_seconds": None, # Placeholder, can be filled by a media info tool
-        "standardized_filename": None # Will be filled next
+        "code": parsed_info.get("code"),
+        "title": final_title,
+        "actors": [val for key, val in actors_map.items() if val.get('id') is not None] + \
+                  [val for key, val in actors_map.items() if val.get('id') is None], # Put actors with ID first
+        "publisher": final_publisher,
+        "filepath": video_filepath,
+        "duration_seconds": None,
+        "standardized_filename": None, # Generated next
+        # Storing AI contributions for transparency in the returned data for now
+        'ai_llm_suggested_title': ai_enhancement_results.get('llm_suggested_title') if ai_enhancement_results else None,
+        'ai_llm_identified_actors': ai_enhancement_results.get('llm_identified_actors') if ai_enhancement_results else None,
+        'ai_llm_identified_publisher': ai_enhancement_results.get('llm_identified_publisher') if ai_enhancement_results else None,
+        'ai_network_actor_info': ai_enhancement_results.get('network_search_actor_results') if ai_enhancement_results else [],
+        'ai_network_publisher_info': ai_enhancement_results.get('network_search_publisher_results') if ai_enhancement_results else [],
     }
 
-    if not consolidated_metadata["title"]:
-        title_options = [potential_title_ocr, potential_title_audio,
-                         os.path.splitext(original_filename_with_ext)[0].replace("_", " ").replace(".", " ")]
-        consolidated_metadata["title"] = next((t for t in title_options if t), "Untitled Video")
-        print(f"Used title from {'OCR' if consolidated_metadata['title'] == potential_title_ocr else 'Audio' if consolidated_metadata['title'] == potential_title_audio else 'filename'}: {consolidated_metadata['title']}")
+    # Filter actors for standardized filename and DB save to only include those with an ID for now
+    # or those we decide to auto-add if that logic were enabled.
+    # For generate_standardized_filename, it expects canonical_name.
+    # For update_video_record, it expects 'id' to be present for linking.
+    actors_for_db_and_filename = [actor for actor in consolidated_metadata["actors"] if actor.get("id") is not None]
+    # If no actors with ID, but LLM found some, we might want to use their names for filename if not adding to DB.
+    # This is a design choice. For now, generate_standardized_filename will use actors_for_db_and_filename.
 
-    if potential_publisher_ocr:
-        consolidated_metadata["publisher"] = potential_publisher_ocr
-        print(f"Used publisher from OCR: {potential_publisher_ocr}")
+    temp_consolidated_for_filename_gen = consolidated_metadata.copy()
+    temp_consolidated_for_filename_gen['actors'] = actors_for_db_and_filename
 
-    final_actor_map = {}
-    all_processed_actors = processed_actors_from_filename + processed_actors_from_content
-    for actor_info in all_processed_actors:
-        actor_id = actor_info['id']
-        if actor_id is not None:
-            if actor_id not in final_actor_map:
-                canonical_name = get_actor_name_by_id(db_path, actor_id)
-                if canonical_name:
-                    final_actor_map[actor_id] = {"id": actor_id, "canonical_name": canonical_name}
-    consolidated_metadata["actors"] = list(final_actor_map.values())
-
-    # Generate Standardized Filename
     consolidated_metadata["standardized_filename"] = generate_standardized_filename(
-        consolidated_metadata, original_extension
+        temp_consolidated_for_filename_gen, original_extension
     )
-    print(f"Generated standardized filename: {consolidated_metadata['standardized_filename']}")
+    logging.info(f"Generated standardized filename: {consolidated_metadata['standardized_filename']}")
 
-    # Database Update
     update_video_record(
         db_path,
         consolidated_metadata["filepath"],
         consolidated_metadata["code"],
         consolidated_metadata["title"],
         consolidated_metadata["publisher"],
-        consolidated_metadata["duration_seconds"], # Will be None for now
+        consolidated_metadata["duration_seconds"],
         consolidated_metadata["standardized_filename"],
-        consolidated_metadata["actors"]
+        actors_for_db_and_filename # Only pass actors with DB IDs
     )
 
-    # Prepare return data (as before, but consolidated_metadata now includes standardized_filename)
     return {
         "original_filepath": video_filepath,
-        "parsed_data_from_filename": parsed_filename_data,
-        "actors_from_filename_lookup": processed_actors_from_filename,
+        "parsed_data_from_filename": parsed_info,
+        # "actors_from_filename_lookup": processed_actors_from_filename, # Replaced by more integrated actors_map logic
         "content_analysis_triggered": run_content_analysis,
-        "raw_content_analysis_results": raw_content_analysis_results if run_content_analysis else "Not Performed",
-        "actors_from_content_lookup": processed_actors_from_content if run_content_analysis else [],
+        "raw_content_analysis_results": raw_content_analysis_results,
+        # "actors_from_content_lookup": processed_actors_from_content, # Replaced by actors_map logic
         "consolidated_metadata": consolidated_metadata
     }
 
 
 if __name__ == '__main__':
+    # Configure Ollama client (important for tests using LLM)
+    # This should be called by any app entry point too.
+    print("--- Main block of metadata_processor.py ---")
+    print("Attempting to configure Ollama client for testing...")
+    configure_ollama_client() # From ai_models.llm_analyzer
+
     db_path = DEFAULT_DB_PATH
 
-    # Ensure database is set up (run database_setup.py manually or via CLI if needed)
-    # For this test, we assume it's been run once.
-    # To ensure a clean slate for testing this specifically:
     if os.path.exists(db_path):
-        print(f"Deleting existing test database: {db_path}")
+        logging.info(f"Deleting existing test database: {db_path}")
         os.remove(db_path)
 
-    # Run setup (using subprocess as in main.py example)
     db_setup_script_path = os.path.join(PROJECT_ROOT, 'database', 'database_setup.py')
     try:
-        print(f"Running database setup script: {db_setup_script_path}...")
+        logging.info(f"Running database setup script: {db_setup_script_path}...")
         subprocess.run(['python', db_setup_script_path], check=True, capture_output=True, text=True)
-        print("Database setup script completed successfully for testing.")
+        logging.info("Database setup script completed successfully for testing.")
     except Exception as e:
-        print(f"Error during test DB setup: {e}")
-        sys.exit(1) # Stop if DB setup fails
+        logging.error(f"Error during test DB setup: {e}", exc_info=True)
+        sys.exit(1)
 
-    videos_dir = os.path.join(PROJECT_ROOT, "data/videos_metadata_test")
+    videos_dir = os.path.join(PROJECT_ROOT, "data/videos_metadata_test_ai")
     os.makedirs(videos_dir, exist_ok=True)
 
     dummy_files_info = [
-        {"name": "[XYZ-789] My Great Movie - John Doe.mp4", "content": "dummy"},
-        {"name": "raw_clip_001_StudioX.avi", "content": "dummy"},
-        {"name": "Another Publisher Action Film - Jane Smith & John Doe.mkv", "content": "dummy"},
-        {"name": "Unknown Performance.mp4", "content": "dummy"},
-        {"name": "JustATitle.webm", "content":"test"} # Test no actors, no code
+        {"name": "[XYZ-789] My Great Movie - John Doe.mp4", "content": "dummy"}, # Should not trigger AI much
+        {"name": "raw_clip_001.avi", "content": "dummy"}, # Should trigger AI, text is just filename
+        {"name": "CookingShow S01E03.mkv", "content": "dummy"}, # AI for title/actors
+        {"name": "Tech Review New Gadget.mp4", "content": "dummy"}, # AI for publisher, maybe actors
+        {"name": "UnknownPerformanceByStars.webm", "content":"test"} # AI for all
     ]
 
     test_video_paths = []
@@ -262,16 +287,16 @@ if __name__ == '__main__':
             f.write(file_info["content"])
         test_video_paths.append(filepath)
 
-    print(f"\n--- Starting Metadata Processor Tests (DB: {db_path}) ---")
+    logging.info(f"\n--- Starting Metadata Processor AI Integration Tests (DB: {db_path}) ---")
     all_results = []
     for video_path in test_video_paths:
         result = process_video_file(video_path, db_path)
         if result:
             all_results.append(result)
-            print(json.dumps(result['consolidated_metadata'], indent=4))
+            print(json.dumps(result, indent=4)) # Print full result for better inspection
             print("-" * 40)
 
-    print("\n--- Verifying Database Content ---")
+    logging.info("\n--- Verifying Database Content After AI Processing ---")
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -287,19 +312,18 @@ if __name__ == '__main__':
 
         conn.close()
     except sqlite3.Error as e:
-        print(f"Error during database verification: {e}")
+        logging.error(f"Error during database verification: {e}", exc_info=True)
     finally:
-        # Clean up dummy files and directory
         for path in test_video_paths:
             try:
                 os.remove(path)
             except OSError as e:
-                print(f"Error removing dummy file {path}: {e}")
+                logging.warning(f"Error removing dummy file {path}: {e}")
         if os.path.exists(videos_dir):
             try:
                 shutil.rmtree(videos_dir)
-                print(f"Cleaned up test directory: {videos_dir}")
+                logging.info(f"Cleaned up test directory: {videos_dir}")
             except OSError as e:
-                 print(f"Error removing test directory {videos_dir}: {e}")
+                 logging.warning(f"Error removing test directory {videos_dir}: {e}")
 
-    print("\n--- Metadata Processor Tests Complete ---")
+    logging.info("\n--- Metadata Processor AI Integration Tests Complete ---")

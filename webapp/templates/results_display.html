@@ -15,7 +15,7 @@
         </div>
 
         <div class="result-block">
-            <h3>Consolidated Data</h3>
+            <h3>Consolidated Data (Final Output)</h3>
             {% if data.consolidated_metadata %}
                 <p><strong>Title:</strong> {{ data.consolidated_metadata.title | default('Not available') }}</p>
                 <p><strong>Code:</strong> {{ data.consolidated_metadata.code | default('Not available') }}</p>
@@ -25,7 +25,10 @@
                 {% if data.consolidated_metadata.actors and data.consolidated_metadata.actors|length > 0 %}
                     <ul>
                     {% for actor in data.consolidated_metadata.actors %}
-                        <li>{{ actor.canonical_name | default('Unknown Name') }} (ID: {{ actor.id | default('N/A') }})</li>
+                        <li>
+                            {{ actor.canonical_name | default('Unknown Name') }} (ID: {{ actor.id | default('N/A') }})
+                            <em><small>(Source: {{ actor.source | default('Unknown') }})</small></em>
+                        </li>
                     {% endfor %}
                     </ul>
                 {% else %}
@@ -39,7 +42,7 @@
         <hr>
 
         <div class="result-block">
-            <h3>Parsed from Filename</h3>
+            <h3>Parsed from Filename (Initial Data)</h3>
             {% if data.parsed_data_from_filename %}
                 <p><strong>Code:</strong> {{ data.parsed_data_from_filename.code | default('Not found') }}</p>
                 <p><strong>Title:</strong> {{ data.parsed_data_from_filename.title | default('Not found') }}</p>
@@ -54,29 +57,54 @@
         <hr>
 
         <div class="result-block">
-            <h3>Content Analysis (Simulated)</h3>
-            <p><strong>Triggered:</strong> {{ 'Yes' if data.content_analysis_triggered else 'No' }}</p>
-            {% if data.content_analysis_triggered %}
-                {% if data.raw_content_analysis_results and data.raw_content_analysis_results != "Not Performed" %}
-                    <h4>OCR Results:</h4>
-                    <p><strong>Publisher Logo Text:</strong> {{ data.raw_content_analysis_results.ocr.publisher_logo_text | default('None found') }}</p>
-                    <p><strong>On-screen Actor Names:</strong>
-                        {{ data.raw_content_analysis_results.ocr.on_screen_actor_names | join(', ') if data.raw_content_analysis_results.ocr.on_screen_actor_names and data.raw_content_analysis_results.ocr.on_screen_actor_names|length > 0 else 'None found' }}
-                    </p>
-                    <p><strong>Other Text:</strong>
-                        {{ data.raw_content_analysis_results.ocr.other_text | join('; ') if data.raw_content_analysis_results.ocr.other_text and data.raw_content_analysis_results.ocr.other_text|length > 0 else 'None found' }}
-                    </p>
+            <h3>AI Content Analysis & Enhancement</h3>
+            <p><strong>Content Analysis Triggered:</strong> {{ 'Yes' if data.content_analysis_triggered else 'No' }}</p>
 
-                    <h4>Audio Analysis Results:</h4>
-                    <p><strong>Mentioned Actor Names:</strong>
-                        {{ data.raw_content_analysis_results.audio.mentioned_actor_names | join(', ') if data.raw_content_analysis_results.audio.mentioned_actor_names and data.raw_content_analysis_results.audio.mentioned_actor_names|length > 0 else 'None found' }}
-                    </p>
-                    <p><strong>Mentioned Title Keywords:</strong>
-                        {{ data.raw_content_analysis_results.audio.mentioned_title_keywords | join(', ') if data.raw_content_analysis_results.audio.mentioned_title_keywords and data.raw_content_analysis_results.audio.mentioned_title_keywords|length > 0 else 'None found' }}
-                    </p>
-                {% else %}
-                    <p>Raw content analysis results not available.</p>
+            {% if data.content_analysis_triggered and data.raw_content_analysis_results and data.raw_content_analysis_results.text_enhancements %}
+                {% set ai_data = data.consolidated_metadata %} {# Using consolidated AI fields for cleaner display #}
+
+                {% if ai_data.ai_llm_suggested_title %}
+                    <p><strong>LLM Suggested Title:</strong> {{ ai_data.ai_llm_suggested_title }}</p>
                 {% endif %}
+
+                {% if ai_data.ai_llm_identified_publisher %}
+                    <p><strong>LLM Identified Publisher:</strong> {{ ai_data.ai_llm_identified_publisher }}</p>
+                {% endif %}
+                {% if ai_data.ai_network_publisher_info and ai_data.ai_network_publisher_info|length > 0 %}
+                    <h4>Supporting Network Search (Publisher):</h4>
+                    <ul class="network-results">
+                    {% for item in ai_data.ai_network_publisher_info %}
+                        <li><a href="{{ item.href }}" target="_blank" title="{{ item.body }}">{{ item.title }}</a></li>
+                    {% else %}
+                        <li>No network search results for publisher.</li>
+                    {% endfor %}
+                    </ul>
+                {% elif ai_data.ai_llm_identified_publisher %}
+                     <p><small><em>(No network search results for publisher or search not performed)</em></small></p>
+                {% endif %}
+
+                {% if ai_data.ai_llm_identified_actors and ai_data.ai_llm_identified_actors|length > 0 %}
+                    <p><strong>LLM Identified Actors (Raw):</strong> {{ ai_data.ai_llm_identified_actors | join(', ') }}</p>
+                {% endif %}
+                {% if ai_data.ai_network_actor_info and ai_data.ai_network_actor_info|length > 0 %}
+                    <h4>Supporting Network Search (Actors):</h4>
+                    <ul class="network-results">
+                    {% for item in ai_data.ai_network_actor_info %}
+                        <li><a href="{{ item.href }}" target="_blank" title="{{ item.body }}">{{ item.title }}</a></li>
+                    {% else %}
+                        <li>No network search results for actors.</li>
+                    {% endfor %}
+                    </ul>
+                {% elif ai_data.ai_llm_identified_actors and ai_data.ai_llm_identified_actors|length > 0 %}
+                     <p><small><em>(No network search results for actors or search not performed)</em></small></p>
+                {% endif %}
+
+                {% if not ai_data.ai_llm_suggested_title and not ai_data.ai_llm_identified_publisher and (not ai_data.ai_llm_identified_actors or ai_data.ai_llm_identified_actors|length == 0) %}
+                    <p>No specific AI enhancements were applied or yielded new results (Ollama may be unavailable or content too sparse for these specific tasks).</p>
+                {% endif %}
+
+            {% elif data.content_analysis_triggered %}
+                <p>Content analysis was triggered, but no specific enhancement results are available (Ollama may have been unavailable or no new information was derived).</p>
             {% endif %}
         </div>
 

@@ -259,4 +259,17 @@ footer {
 .result-block ul {
     padding-left: 20px;
 }
+
+/* Network search results list */
+.network-results {
+    list-style-type: circle; /* Or disc, or none if preferred */
+    margin-left: 20px;
+    padding-left: 10px;
+}
+.network-results li {
+    margin-bottom: 0.5rem;
+}
+.network-results li a {
+    font-weight: 500;
+}
 ```
