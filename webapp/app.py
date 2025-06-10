@@ -40,9 +40,8 @@ app.config.from_object(Config)
 # Ensure upload folder exists
 if not os.path.exists(app.config["UPLOAD_FOLDER"]):
     os.makedirs(app.config["UPLOAD_FOLDER"])
-    # Use app.logger once app is created, or global logger before.
-    # For this startup phase, print is acceptable or configure global logger early.
-    print(f"INFO: Created upload folder: {app.config['UPLOAD_FOLDER']}")
+    # app.logger is available after app = Flask(__name__)
+    app.logger.info(f"Created upload folder: {app.config['UPLOAD_FOLDER']}")
 
 
 # Configure logging level for Flask app logger

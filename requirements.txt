@@ -1,5 +1,35 @@
-Flask>=2.0
-ollama>=0.2.0
-duckduckgo_search>=5.0.0
-beautifulsoup4>=4.0.0
-requests>=2.20.0
+# Core Application & Web Framework
+Flask==2.3.3
+Werkzeug==2.3.7
+Jinja2==3.1.3
+itsdangerous==2.1.2
+click==8.1.7
+blinker==1.7.0
+
+# AI - Ollama Client
+ollama==0.2.0
+httpx==0.27.0
+
+# AI - Network Search & Content Fetching
+duckduckgo_search==5.3.1b1
+# requests is a dependency of duckduckgo_search, pinned below
+# lxml is an optional parser for duckduckgo_search, not strictly required by its core if not used explicitly
+beautifulsoup4==4.12.3
+soupsieve==2.5 # dependency of beautifulsoup4
+
+# HTTP Requests Library (also used by other libs)
+requests==2.31.0
+charset-normalizer==3.3.2
+idna==3.7
+urllib3==2.2.1
+certifi==2024.2.2
+
+# Notes:
+# - sqlite3 is a built-in Python module and not listed here.
+# - typing_extensions might be pulled in by various libraries, especially for
+#   compatibility with older Python versions. If specific features from it are
+#   used directly, it could be pinned. For now, assume it's a transitive dependency.
+# - This list is an estimation based on common dependencies. A `pip freeze`
+#   in a clean virtual environment after `pip install -r old_requirements.txt`
+#   would provide the exact set.
+```

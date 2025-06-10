@@ -21,6 +21,11 @@ if PROJECT_ROOT_FOR_PATH_MOD not in sys.path:
 # Configure module-level logger
 logger = logging.getLogger(__name__)
 # BasicConfig will be in __main__ for direct execution, or by the app.
+if not logger.handlers:  # Add a basic handler if no handlers are configured by app
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(module)s - %(message)s",
+    )
 
 # Project-specific imports
 from backend.filename_parser import parse_filename
@@ -479,7 +484,9 @@ if __name__ == "__main__":
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         force=True,
     )
-    logger = logging.getLogger(__name__) # Ensure __main__ logger is also named for consistency if needed
+    logger = logging.getLogger(
+        __name__
+    )  # Ensure __main__ logger is also named for consistency if needed
 
     logger.info("--- Main block of metadata_processor.py (Refactored) ---")
     logger.info("Attempting to configure Ollama client for testing...")
@@ -608,4 +615,3 @@ if __name__ == "__main__":
     logger.info(
         "\n--- Metadata Processor AI Integration Tests Complete (Refactored) ---"
     )
-```

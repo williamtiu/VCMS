@@ -152,12 +152,12 @@ def update_video_record(
                         f"Re-queried Video ID for '{original_filepath}': {video_id}"
                     )
                 else:
-                    logging.critical( # Use module logger for consistency if preferred
+                    logger.critical(
                         f"CRITICAL: Could not determine Video ID for '{original_filepath}' after all attempts."
                     )
-                    raise ValueError(
-                        f"Failed to determine video_id for filepath: {original_filepath}"
-                    )
+                    # Instead of raising ValueError to be caught immediately below,
+                    # log and return False directly as per the function's error signaling.
+                    return False # Critical error, operation failed
 
             logger.debug(
                 f"Deleting existing actor associations for Video ID: {video_id}"
@@ -166,40 +166,52 @@ def update_video_record(
 
             actors_added_count: int = 0
             if actors_list:
+                valid_actor_links: List[Tuple[Optional[int], Optional[int]]] = []
                 for actor in actors_list:
                     actor_db_id = actor.get("id")
                     if actor_db_id is not None:
-                        try:
-                            cursor.execute(
-                                "INSERT INTO video_actors (video_id, actor_id) VALUES (?, ?)",
-                                (video_id, actor_db_id),
-                            )
-                            actors_added_count += 1
-                        except sqlite3.IntegrityError as e:
-                            logger.warning(
-                                f"Could not add association for Video ID {video_id} and Actor ID {actor_db_id}. "
-                                f"Error: {e}. Ensure actor ID exists in 'actors' table."
-                            )
+                        valid_actor_links.append((video_id, actor_db_id))
                     else:
                         logger.warning(
                             f"Actor '{actor.get('canonical_name', 'N/A')}' missing 'id'. "
                             f"Skipping association for Video ID {video_id}."
                         )
 
+                if valid_actor_links:
+                    try:
+                        cursor.executemany(
+                            "INSERT INTO video_actors (video_id, actor_id) VALUES (?, ?)",
+                            valid_actor_links,
+                        )
+                        actors_added_count = len(valid_actor_links)
+                    except sqlite3.IntegrityError as e:
+                        logger.warning(
+                            f"Could not add batch associations for Video ID {video_id}. "
+                            f"Ensure actor IDs exist in 'actors' table. " # Error: {e} is implicit with exc_info
+                            "Individual problematic links were not inserted.",
+                            exc_info=True # Added for better debugging
+                        )
+                        # If executemany fails, no rows are inserted for that batch.
+                        # Depending on desired atomicity, might need row-by-row fallback.
+                        # For now, batch failure means actors_added_count remains 0 from this attempt.
+                        # If a partial insert is possible and desired, need individual inserts in except.
+                        # However, IntegrityError on executemany usually aborts the whole batch.
+
             logger.info(
                 f"Successfully processed video '{original_filepath}' (Video ID: {video_id}), "
-                f"linked {actors_added_count} actors."
+                f"attempted to link {len(valid_actor_links) if actors_list and valid_actor_links else 0} valid actors, " # Log attempted links
+                f"{actors_added_count} actors linked successfully."
             )
             return True
 
+    except ValueError as ve: # Catch the specific ValueError if it were still raised (now handled by return False)
+        logger.error(f"ValueError in update_video_record for '{original_filepath}': {ve}", exc_info=True)
+        return False
     except sqlite3.Error as e:
         logger.error(
             f"Database error in update_video_record for '{original_filepath}': {e}",
             exc_info=True,
         )
-        return False
-    except ValueError as ve:
-        logger.error(str(ve), exc_info=True)
         return False
     except Exception as e:
         logger.error(
@@ -379,4 +391,3 @@ if __name__ == "__main__":
         logger.error(f"Error during verification: {e}", exc_info=True)
 
     logger.info("--- database_operations.py tests complete ---")
-```

@@ -110,23 +110,29 @@ def create_all_tables(conn: sqlite3.Connection) -> bool:
                                         FOREIGN KEY (actor_id) REFERENCES actors (id) ON DELETE CASCADE
                                     );"""
 
-    tables_to_create: List[Tuple[str, str]] = [
-        ("videos", sql_create_videos_table),
-        ("actors", sql_create_actors_table),
-        ("video_actors", sql_create_video_actors_table),
-        ("actor_aliases", sql_create_actor_aliases_table),
+    sql_create_idx_actor_aliases_actor_id = """
+    CREATE INDEX IF NOT EXISTS idx_actor_aliases_actor_id ON actor_aliases (actor_id);
+    """
+
+    ddl_statements: List[Tuple[str, str]] = [
+        ("videos table", sql_create_videos_table),
+        ("actors table", sql_create_actors_table),
+        ("video_actors table", sql_create_video_actors_table),
+        ("actor_aliases table", sql_create_actor_aliases_table),
+        ("index on actor_aliases(actor_id)", sql_create_idx_actor_aliases_actor_id),
     ]
 
     all_successful = True
-    for table_name, sql_statement in tables_to_create:
+    for item_name, sql_statement in ddl_statements:
+        # The create_table function can execute any DDL, including CREATE INDEX
         if create_table(conn, sql_statement):
             logger.info(
-                f"Table '{table_name}' created successfully or already exists."
+                f"DDL item '{item_name}' executed successfully or already exists."
             )
         else:
-            logger.error(f"Failed to create table '{table_name}'.")
+            logger.error(f"Failed to execute DDL item '{item_name}'.")
             all_successful = False
-            break  # Stop if one table creation fails
+            break  # Stop if one DDL statement fails
 
     return all_successful
 
@@ -142,22 +148,26 @@ def _get_or_create_actor(
         actor_name (str): The name of the actor.
 
     Returns:
-        Optional[int]: The actor's ID, or None if an error occurs.
+        Optional[int]: The actor's ID, or None if an error occurs or name is empty.
     """
+    stripped_actor_name = actor_name.strip()
+    if not stripped_actor_name:
+        logger.warning("_get_or_create_actor called with empty/whitespace actor_name.")
+        return None
     try:
-        cursor.execute("SELECT id FROM actors WHERE name = ?", (actor_name,))
+        cursor.execute("SELECT id FROM actors WHERE name = ?", (stripped_actor_name,))
         row = cursor.fetchone()
         if row:
-            logger.info(f"Actor '{actor_name}' found with ID: {row[0]}.")
+            logger.info(f"Actor '{stripped_actor_name}' found with ID: {row[0]}.")
             return row[0]
         else:
-            cursor.execute("INSERT INTO actors (name) VALUES (?)", (actor_name,))
+            cursor.execute("INSERT INTO actors (name) VALUES (?)", (stripped_actor_name,))
             new_id = cursor.lastrowid
-            logger.info(f"Actor '{actor_name}' inserted with new ID: {new_id}.")
+            logger.info(f"Actor '{stripped_actor_name}' inserted with new ID: {new_id}.")
             return new_id
     except sqlite3.Error as e:
         logger.error(
-            f"Error getting or creating actor '{actor_name}': {e}", exc_info=True
+            f"Error getting or creating actor '{stripped_actor_name}': {e}", exc_info=True
         )
         return None
 
@@ -284,4 +294,3 @@ if __name__ == "__main__":
         force=True,
     ) # Use force=True if other modules might have configured root logger
     main()
-```

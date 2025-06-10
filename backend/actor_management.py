@@ -327,30 +327,51 @@ def get_all_actors_with_aliases(
         List[Dict[str, Union[int, str, List[str]]]]:
             List of {'id', 'name', 'aliases'}, empty on error.
     """
-    actors_data: List[Dict[str, Union[int, str, List[str]]]] = []
+    actors_map: Dict[int, Dict[str, Union[int, str, List[str]]]] = {}
     try:
         with _get_db_connection(db_path) as conn:
             if not conn:
-                return []
+                return []  # _get_db_connection would have logged the error
             cursor = conn.cursor()
+
+            # 1. Fetch all actors
             cursor.execute("SELECT id, name FROM actors ORDER BY name COLLATE NOCASE")
             all_actors_rows = cursor.fetchall()
+
+            if not all_actors_rows:
+                logger.info("No actors found in the database.")
+                return []
+
             for actor_row in all_actors_rows:
-                actor_id: int = actor_row["id"]
-                actor_name: str = actor_row["name"]
-                cursor.execute(
-                    "SELECT alias_name FROM actor_aliases WHERE actor_id = ? ORDER BY alias_name COLLATE NOCASE",
-                    (actor_id,),
-                )
-                aliases_rows = cursor.fetchall()
-                aliases: List[str] = [
-                    alias_row["alias_name"] for alias_row in aliases_rows
-                ]
-                actors_data.append(
-                    {"id": actor_id, "name": actor_name, "aliases": aliases}
-                )
-        logger.info(f"Retrieved {len(actors_data)} actors with their aliases.")
-        return actors_data
+                actors_map[actor_row["id"]] = {
+                    "id": actor_row["id"],
+                    "name": actor_row["name"],
+                    "aliases": [], # Initialize with empty list
+                }
+
+            # 2. Fetch all aliases
+            cursor.execute(
+                "SELECT actor_id, alias_name FROM actor_aliases ORDER BY actor_id, alias_name COLLATE NOCASE"
+            )
+            all_aliases_rows = cursor.fetchall()
+
+            # 3. Map aliases to their respective actors
+            for alias_row in all_aliases_rows:
+                actor_id = alias_row["actor_id"]
+                if actor_id in actors_map: # Check if the actor_id from alias exists in our actors map
+                    actors_map[actor_id]["aliases"].append(alias_row["alias_name"])
+                else:
+                    # This case should be rare if DB has foreign key constraints enforced properly,
+                    # but good to log if an alias points to a non-existent/unfetched actor.
+                    logger.warning(
+                        f"Found alias '{alias_row['alias_name']}' for non-existent or "
+                        f"unselected actor ID {actor_id}. Skipping this alias."
+                    )
+
+            final_actors_list = list(actors_map.values())
+            logger.info(f"Retrieved {len(final_actors_list)} actors with their aliases.")
+            return final_actors_list
+
     except sqlite3.Error as e:
         logger.error(
             f"Database error in get_all_actors_with_aliases: {e}", exc_info=True
@@ -525,4 +546,3 @@ if __name__ == "__main__":
     )
 
     logger.info("--- actor_management.py tests complete ---")
-```
